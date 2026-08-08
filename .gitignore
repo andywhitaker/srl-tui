@@ -1,0 +1,29 @@
+# Compiled binaries
+srl-tui
+dist/
+*.test
+*.exe
+/cmd/*/*
+!/cmd/*/*.go
+
+# Test & Debug binaries
+inspect*
+test*
+verify*
+bench*
+diag
+gnmitest
+debugevpn
+debugdata
+debugndk
+
+# Logs & temp files
+*.log
+
+# OS & IDE
+.DS_Store
+*.swp
+*.tmp
+
+# Local agent config
+.gemini/
