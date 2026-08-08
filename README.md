@@ -21,6 +21,9 @@
 - Displays CPU and memory utilization gauges alongside event counters.
 
 ### 2. Physical Port Matrix
+
+![ports screen](images/ports-screen.png)
+
 - Displays front-panel ethernet interfaces dynamically matching switch hardware port counts (e.g. 58 physical ports on 7220 IXR-D2/D3 models).
 - Color-coded operational states:
   - **Green**: Link Up / Healthy
@@ -29,6 +32,9 @@
 - Includes a split-pane inspector showing speed, MTU, traffic rates (bps/pps), errors, and descriptions.
 
 ### 3. Topology & BGP Mesh
+
+![bgp screen](images/bgp-screen.png)
+
 - Renders an interactive ASCII fabric topology map connecting leaves and spines.
 - Provides a live BGP neighbor table detailing peer state (`Established`, `Active`, `Down`), ASNs, session uptime, and prefix counts.
 
@@ -37,6 +43,11 @@
 - Highlights Equal-Cost Multi-Path (ECMP) routes with multi-path badges (e.g. `10.1.10.10, 10.1.20.20 [ECMP x2]`).
 
 ### 5. EVPN Route View
+
+![evpn overview](images/evpn-overview.png)
+
+![evpn detail](images/evpn-detail.png)
+
 - Displays EVPN Route Types 1 through 5:
   - Type 1 `(AD)` Auto-Discovery
   - Type 2 `(MAC/IP)` MAC/IP Advertisement
