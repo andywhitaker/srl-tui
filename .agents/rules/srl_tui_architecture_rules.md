@@ -28,3 +28,14 @@
 - Local BGP interfaces MUST be resolved dynamically from gNMI `local-interface` attributes, neighbor `description` fields (`via intf <name>`), or local IP route table matching.
 - Static interface string fallbacks are strictly prohibited.
 
+## 7. GoReleaser v2 Workflow & Schema Standards
+- `.github/workflows/release.yml` MUST use `goreleaser-action@v6` with `version: "~> v2"` to match `.goreleaser.yaml` `version: 2`.
+- `.goreleaser.yaml` archive configurations MUST use `formats: [ tar.gz ]`.
+
+## 8. Root-Anchored `.gitignore` Ignore Patterns
+- Wildcard patterns in `.gitignore` intended for root binaries (e.g., `/inspect*`, `/test*`, `/verify*`) MUST start with a leading slash `/` to avoid accidentally ignoring source files in subdirectories.
+
+## 9. Release Archive Asset Integrity
+- All files configured under `archives.files` in `.goreleaser.yaml` (e.g., `README.md`, `LICENSE`) MUST exist in the repository root.
+
+
