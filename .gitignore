@@ -7,15 +7,15 @@ dist/
 !/cmd/*/*.go
 
 # Test & Debug binaries
-inspect*
-test*
-verify*
-bench*
-diag
-gnmitest
-debugevpn
-debugdata
-debugndk
+/inspect*
+/test*
+/verify*
+/bench*
+/diag
+/gnmitest
+/debugevpn
+/debugdata
+/debugndk
 
 # Logs & temp files
 *.log
