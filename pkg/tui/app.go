@@ -129,7 +129,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case TickMsg:
+		if m.inspector.Active && m.inspector.IsPortModal {
+			snap := m.state.state.Snapshot()
+			for _, p := range snap.Ports {
+				if p.Name == m.inspector.Port.Name || p.ShortName == m.inspector.Port.Name {
+					m.inspector.UpdateYAMLFromPort(p)
+					break
+				}
+			}
+		}
 		return m, tickCmd()
+
 
 	case tea.KeyMsg:
 		if m.pageSearchActive {
@@ -249,16 +259,95 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		if m.inspector.Active {
-			visibleLines := m.height - 13
+			if m.inspector.ConfirmPrompt {
+				switch msg.String() {
+				case "y", "Y", "enter":
+					enable := (m.inspector.ConfirmAction == "enable")
+					portName := m.inspector.Port.Name
+					if m.ndkClient != nil {
+						go m.ndkClient.SetInterfaceAdminState(m.ctx, portName, enable)
+					} else {
+						adminStr := "disable"
+						if enable {
+							adminStr = "enable"
+						}
+						m.state.state.SetPortAdminState(portName, adminStr)
+					}
+					m.inspector.ConfirmPrompt = false
+					return m, nil
+
+				case "n", "N", "esc":
+					m.inspector.ConfirmPrompt = false
+					return m, nil
+				}
+				return m, nil
+			}
+
+			// While search input box has focus, hotkeys are disabled
+			if m.inspector.SearchInput.Focused() {
+				switch msg.String() {
+				case "enter":
+					m.inspector.SearchInput.Blur()
+					return m, nil
+				case "esc":
+					m.inspector.SearchInput.Blur()
+					return m, nil
+				default:
+					oldQuery := m.inspector.SearchInput.Value()
+					var cmd tea.Cmd
+					m.inspector.SearchInput, cmd = m.inspector.SearchInput.Update(msg)
+					if m.inspector.SearchInput.Value() != oldQuery {
+						m.inspector.ScrollOffset = 0
+					}
+					return m, cmd
+				}
+			}
+
+			// Search input is not focused -> process hotkeys, focus trigger '/', and navigation
+			visibleLines := m.height - 15
 			if visibleLines < 3 {
 				visibleLines = 3
 			}
 			totalLines := m.inspector.GetFilteredLineCount()
 
 			switch msg.String() {
-			case "esc", "ctrl+c":
+			case "/":
+				m.inspector.SearchInput.Focus()
+				return m, nil
+
+			case "a", "A":
+				if m.inspector.IsPortModal {
+					snap := m.state.state.Snapshot()
+					var currentPort ndk.PortState
+					found := false
+					for _, p := range snap.Ports {
+						if p.Name == m.inspector.Port.Name || p.ShortName == m.inspector.Port.Name {
+							currentPort = p
+							found = true
+							break
+						}
+					}
+					if !found {
+						currentPort = m.inspector.Port
+					}
+
+					m.inspector.UpdateYAMLFromPort(currentPort)
+					adminUp := strings.ToLower(currentPort.AdminState) == "up" || strings.ToLower(currentPort.AdminState) == "enable"
+
+					m.inspector.ConfirmPrompt = true
+					if adminUp {
+						m.inspector.ConfirmAction = "disable"
+					} else {
+						m.inspector.ConfirmAction = "enable"
+					}
+					return m, nil
+				}
+
+
+			case "esc", "ctrl+c", "q":
 				m.inspector.Active = false
 				return m, nil
+
 			case "down":
 				m.inspector.ScrollDown(totalLines, visibleLines)
 				return m, nil
@@ -271,16 +360,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "pgup", "ctrl+u":
 				m.inspector.PageUp()
 				return m, nil
-			default:
-				oldQuery := m.inspector.SearchInput.Value()
-				var cmd tea.Cmd
-				m.inspector.SearchInput, cmd = m.inspector.SearchInput.Update(msg)
-				if m.inspector.SearchInput.Value() != oldQuery {
-					m.inspector.ScrollOffset = 0
-				}
-				return m, cmd
 			}
+
+			return m, nil
 		}
+
+
 
 		if m.showHelp {
 			if msg.String() == "esc" || msg.String() == "?" || msg.String() == "q" {
@@ -583,9 +668,20 @@ func (m Model) View() string {
 	}
 
 	if m.inspector.Active {
+		m.inspector.SchemaKeys = snap.SchemaKeys
+		if m.inspector.IsPortModal {
+			for _, p := range snap.Ports {
+				if p.Name == m.inspector.Port.Name || p.ShortName == m.inspector.Port.Name {
+					m.inspector.UpdateYAMLFromPort(p)
+					break
+				}
+			}
+		}
+
 		inspectorView := components.RenderInspectorModal(m.inspector, m.theme, m.width, m.height)
 		return overlayModal(fullView, inspectorView, m.width, m.height)
 	}
+
 
 	if m.showHelp {
 		helpModal := RenderHelpOverlay(m.theme, m.width, m.height)

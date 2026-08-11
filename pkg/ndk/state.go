@@ -1,12 +1,14 @@
 package ndk
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"strings"
 	"sync"
 	"time"
 )
+
 
 type PortState struct {
 	Index       int       `json:"index"`
@@ -153,7 +155,9 @@ type TelemetryState struct {
 	RouteTable        []RouteEntry            `json:"route_table"`
 	EVPNRoutes        []EVPNRouteEntry        `json:"evpn_routes"`
 	MaintenanceGroups []MaintenanceGroupState `json:"maintenance_groups"`
+	SchemaKeys        map[string]string       `json:"schema_keys"`
 }
+
 
 func NewTelemetryState(numPorts int) *TelemetryState {
 	if numPorts <= 0 {
@@ -195,8 +199,22 @@ func NewTelemetryState(numPorts int) *TelemetryState {
 		RouteTable:        make([]RouteEntry, 0),
 		EVPNRoutes:        make([]EVPNRouteEntry, 0),
 		MaintenanceGroups: make([]MaintenanceGroupState, 0),
+		SchemaKeys:        make(map[string]string),
 	}
 }
+
+func (s *TelemetryState) RegisterSchemaKey(containerName, keyName string) {
+	if containerName == "" || keyName == "" {
+		return
+	}
+	s.Lock()
+	defer s.Unlock()
+	if s.SchemaKeys == nil {
+		s.SchemaKeys = make(map[string]string)
+	}
+	s.SchemaKeys[containerName] = keyName
+}
+
 
 func (s *TelemetryState) Lock() {
 	if s.mu != nil {
@@ -276,6 +294,53 @@ func (s *TelemetryState) ToggleNeighborMaintenance(peerIP string, enable bool, g
 	}
 }
 
+func (s *TelemetryState) SetPortAdminState(portName string, adminState string) {
+	s.Lock()
+	defer s.Unlock()
+
+	adminStr := strings.ToLower(adminState)
+	if adminStr == "up" {
+		adminStr = "enable"
+	} else if adminStr == "down" {
+		adminStr = "disable"
+	}
+
+	for i := range s.Ports {
+		if s.Ports[i].Name == portName || s.Ports[i].ShortName == portName {
+			s.Ports[i].AdminState = adminStr
+			if adminStr == "disable" || adminStr == "down" {
+				s.Ports[i].OperState = "down"
+				s.Ports[i].RxBps = 0
+				s.Ports[i].TxBps = 0
+				s.Ports[i].RxPps = 0
+				s.Ports[i].TxPps = 0
+				s.Ports[i].UtilPercent = 0
+			} else {
+				s.Ports[i].OperState = "up"
+			}
+			s.Ports[i].LastChange = time.Now()
+
+			if s.Ports[i].RawJSON != "" {
+				var rawMap map[string]interface{}
+				if err := json.Unmarshal([]byte(s.Ports[i].RawJSON), &rawMap); err == nil {
+					rawMap["admin-state"] = adminStr
+					if adminStr == "disable" || adminStr == "down" {
+						rawMap["oper-state"] = "down"
+					} else {
+						rawMap["oper-state"] = "up"
+					}
+					if b, errM := json.Marshal(rawMap); errM == nil {
+						s.Ports[i].RawJSON = string(b)
+					}
+				}
+			}
+			break
+		}
+
+	}
+}
+
+
 func (s *TelemetryState) Snapshot() *TelemetryState {
 	if s.mu != nil {
 		s.mu.RLock()
@@ -342,6 +407,11 @@ func (s *TelemetryState) Snapshot() *TelemetryState {
 
 	snap.EVPNRoutes = make([]EVPNRouteEntry, len(s.EVPNRoutes))
 	copy(snap.EVPNRoutes, s.EVPNRoutes)
+
+	snap.SchemaKeys = make(map[string]string)
+	for k, v := range s.SchemaKeys {
+		snap.SchemaKeys[k] = v
+	}
 
 	snap.MaintenanceGroups = make([]MaintenanceGroupState, len(s.MaintenanceGroups))
 	for i, g := range s.MaintenanceGroups {
