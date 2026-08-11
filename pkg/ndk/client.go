@@ -598,7 +598,19 @@ func (c *NDKClient) parseGNMIStreamNotification(notif *pb.Notification) {
 			}
 		}
 
+		// Dynamically register schema key attributes directly from SR Linux gNMI notification path elements
+		if u.GetPath() != nil {
+			for _, elem := range u.GetPath().GetElem() {
+				if len(elem.GetKey()) > 0 {
+					for k := range elem.GetKey() {
+						c.state.RegisterSchemaKey(elem.GetName(), k)
+					}
+				}
+			}
+		}
+
 		// 0. Interface State Updates
+
 		if strings.Contains(pathStr, "/interface") && !strings.Contains(pathStr, "subinterface") {
 			intfName := getElemKey(u.GetPath(), "interface", "name")
 			if strings.HasPrefix(intfName, "ethernet-1/") && !strings.Contains(intfName, ".") {
@@ -620,12 +632,29 @@ func (c *NDKClient) parseGNMIStreamNotification(notif *pb.Notification) {
 							c.state.Ports[idx].OperState = "down"
 						}
 					}
+
 					if descVal, ok := dataMap["description"].(string); ok {
 						c.state.Ports[idx].Description = descVal
 					}
 					if mtuVal, ok := dataMap["mtu"].(float64); ok && mtuVal > 0 {
 						c.state.Ports[idx].MTU = uint32(mtuVal)
 					}
+
+					// Dynamically update Port RawJSON telemetry map from incoming gNMI notification dataMap
+					var rawMap map[string]interface{}
+					if c.state.Ports[idx].RawJSON != "" {
+						_ = json.Unmarshal([]byte(c.state.Ports[idx].RawJSON), &rawMap)
+					}
+					if rawMap == nil {
+						rawMap = make(map[string]interface{})
+					}
+					for k, v := range dataMap {
+						rawMap[k] = v
+					}
+					if b, errM := json.Marshal(rawMap); errM == nil {
+						c.state.Ports[idx].RawJSON = string(b)
+					}
+
 
 					// 1. Traffic Rate Telemetry (top-level or nested)
 					var inBpsVal, outBpsVal float64
@@ -2200,4 +2229,66 @@ func (c *NDKClient) SetBGPNeighborMaintenanceMode(ctx context.Context, peerIP st
 
 	return nil
 }
+
+func (c *NDKClient) SetInterfaceAdminState(ctx context.Context, portName string, enable bool) error {
+	adminStr := "disable"
+	if enable {
+		adminStr = "enable"
+	}
+
+	c.mu.Lock()
+	client := c.gnmiClient
+	c.mu.Unlock()
+
+	if client == nil {
+		// In demo / simulator mode without gNMI connection, toggle local state directly
+		c.state.SetPortAdminState(portName, adminStr)
+		return nil
+	}
+
+	user := os.Getenv("SRL_USERNAME")
+	if user == "" {
+		user = "admin"
+	}
+	pass := os.Getenv("SRL_PASSWORD")
+	if pass == "" {
+		pass = "NokiaSrl1!"
+	}
+	md := metadata.Pairs("username", user, "password", pass)
+	setCtx, cancel := context.WithTimeout(metadata.NewOutgoingContext(ctx, md), 5*time.Second)
+	defer cancel()
+
+	intfPayload := map[string]interface{}{
+		"admin-state": adminStr,
+	}
+	intfBytes, err := json.Marshal(intfPayload)
+	if err != nil {
+		return fmt.Errorf("marshal interface admin-state payload failed: %w", err)
+	}
+
+	setReq := &pb.SetRequest{
+		Update: []*pb.Update{
+			{
+				Path: &pb.Path{
+					Elem: []*pb.PathElem{
+						{Name: "interface", Key: map[string]string{"name": portName}},
+					},
+				},
+				Val: &pb.TypedValue{
+					Value: &pb.TypedValue_JsonIetfVal{
+						JsonIetfVal: intfBytes,
+					},
+				},
+			},
+		},
+	}
+
+	_, setErr := client.Set(setCtx, setReq)
+	if setErr != nil {
+		return fmt.Errorf("gNMI Set error for interface %s admin-state: %w", portName, setErr)
+	}
+
+	return nil
+}
+
 
