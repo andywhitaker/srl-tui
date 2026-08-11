@@ -158,7 +158,20 @@ func RenderTopoMesh(snap *ndk.TelemetryState, focused bool, pal theme.Palette, w
 			intfStr := lipgloss.NewStyle().Foreground(pal.Warning).Render(fmt.Sprintf("%-16s", peer.Interface))
 			afStr := lipgloss.NewStyle().Foreground(pal.Primary).Render(fmt.Sprintf("%-18s", afDisplay))
 			upStr := lipgloss.NewStyle().Foreground(pal.Subtext).Render(fmt.Sprintf("%-10s", peer.Uptime))
-			pfxStr := fmt.Sprintf("%d / %d", peer.RxPrefixes, peer.TxPrefixes)
+			var pfxParts []string
+			if len(peer.AddrFamilies) > 0 {
+				for _, af := range peer.AddrFamilies {
+					if st, ok := peer.AFStats[af]; ok {
+						pfxParts = append(pfxParts, fmt.Sprintf("%d/%d", st.RxPrefixes, st.TxPrefixes))
+					} else {
+						pfxParts = append(pfxParts, fmt.Sprintf("%d/%d", peer.RxPrefixes, peer.TxPrefixes))
+					}
+				}
+			}
+			pfxStr := strings.Join(pfxParts, ", ")
+			if pfxStr == "" {
+				pfxStr = fmt.Sprintf("%d/%d", peer.RxPrefixes, peer.TxPrefixes)
+			}
 
 			prefixPointer := "  "
 			if i == selectedIdx {

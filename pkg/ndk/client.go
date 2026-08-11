@@ -468,6 +468,31 @@ func evpnRouteKey(r EVPNRouteEntry) string {
 	}
 }
 
+func parseUint32Val(val interface{}) (uint32, bool) {
+	if val == nil {
+		return 0, false
+	}
+	switch v := val.(type) {
+	case float64:
+		return uint32(v), true
+	case float32:
+		return uint32(v), true
+	case int64:
+		return uint32(v), true
+	case int:
+		return uint32(v), true
+	case uint64:
+		return uint32(v), true
+	case uint32:
+		return v, true
+	case string:
+		if parsed, err := strconv.ParseUint(v, 10, 32); err == nil {
+			return uint32(parsed), true
+		}
+	}
+	return 0, false
+}
+
 func (c *NDKClient) ParseGNMIStreamNotificationPublic(notif *pb.Notification) {
 	c.parseGNMIStreamNotification(notif)
 }
@@ -711,28 +736,40 @@ func (c *NDKClient) parseGNMIStreamNotification(notif *pb.Notification) {
 		}
 
 		// 1. BGP Neighbor Updates
-		if strings.Contains(pathStr, "/neighbor") {
-			peerIP := getElemKey(u.GetPath(), "neighbor", "peer-address")
-			if peerIP != "" && peerIP != "mgmt" {
+		if strings.Contains(pathStr, "/bgp") || strings.Contains(pathStr, "/neighbor") {
+			var nbrMaps []map[string]interface{}
+			if nList, ok := dataMap["neighbor"].([]interface{}); ok {
+				for _, item := range nList {
+					if nm, ok := item.(map[string]interface{}); ok {
+						nbrMaps = append(nbrMaps, nm)
+					}
+				}
+			} else {
+				nbrMaps = append(nbrMaps, dataMap)
+			}
+
+			for _, nMap := range nbrMaps {
+				peerIP, _ := nMap["peer-address"].(string)
+				if peerIP == "" {
+					peerIP = getElemKey(u.GetPath(), "neighbor", "peer-address")
+				}
+				if peerIP == "" || peerIP == "mgmt" {
+					continue
+				}
+
 				existing := bgpPeerMap[peerIP]
 
-				stateStr, _ := dataMap["session-state"].(string)
-				peerASVal, hasPeerAS := dataMap["peer-as"].(float64)
-				peerType, _ := dataMap["peer-type"].(string)
-				lastEst, _ := dataMap["last-established"].(string)
+				stateStr, _ := nMap["session-state"].(string)
+				peerASVal, hasPeerAS := nMap["peer-as"].(float64)
+				peerType, _ := nMap["peer-type"].(string)
+				lastEst, _ := nMap["last-established"].(string)
 
 				peer := existing
 				peer.NeighborIP = peerIP
 
-				// Preserve/Update PeerASN: if update has valid peer-as > 0 use it; otherwise keep existing or infer
+				// Preserve/Update PeerASN: if update has valid peer-as > 0 use it; otherwise keep existing
 				if hasPeerAS && peerASVal > 0 {
 					peer.PeerASN = uint32(peerASVal)
-				} else if peer.PeerASN == 0 {
-					if strings.HasPrefix(peerIP, "10.1.10.") {
-						peer.PeerASN = 10
-					} else if strings.HasPrefix(peerIP, "10.1.20.") {
-						peer.PeerASN = 20
-					}
 				}
 
 				if peerType != "" {
@@ -741,7 +778,40 @@ func (c *NDKClient) parseGNMIStreamNotification(notif *pb.Notification) {
 					peer.PeerType = "EBGP"
 				}
 
-				if localIntf, ok := dataMap["local-interface"].(string); ok && localIntf != "" {
+				localIntf := ""
+				if li, ok := nMap["local-interface"].(string); ok && li != "" {
+					localIntf = li
+				}
+				if localIntf == "" {
+					if desc, ok := nMap["description"].(string); ok && desc != "" {
+						if idx := strings.Index(desc, "via intf "); idx != -1 {
+							intfPart := strings.TrimSpace(desc[idx+len("via intf "):])
+							fields := strings.Fields(intfPart)
+							if len(fields) > 0 {
+								name := fields[0]
+								if !strings.Contains(name, ".") {
+									name += ".0"
+								}
+								localIntf = name
+							}
+						}
+					}
+				}
+				if localIntf == "" {
+					if trMap, ok := nMap["transport"].(map[string]interface{}); ok {
+						if locAddr, ok := trMap["local-address"].(string); ok && locAddr != "" {
+							c.state.RLock()
+							for _, r := range c.state.RouteTable {
+								if strings.Contains(r.NextHop, locAddr) && r.NextHop != "direct" {
+									localIntf = r.NextHop
+									break
+								}
+							}
+							c.state.RUnlock()
+						}
+					}
+				}
+				if localIntf != "" {
 					peer.Interface = localIntf
 				} else if peer.Interface == "" {
 					peer.Interface = "-"
@@ -771,96 +841,113 @@ func (c *NDKClient) parseGNMIStreamNotification(notif *pb.Notification) {
 					peer.Uptime = "-"
 				}
 
-				// Build / merge active address-families map for peer
-				afMap := make(map[string]bool)
-				for _, existingAf := range peer.AddrFamilies {
-					afMap[existingAf] = true
+				if peer.AFStats == nil {
+					peer.AFStats = make(map[string]AFStats)
 				}
 
-				// 1. Process afi-safi array if present
-				if afiList, ok := dataMap["afi-safi"].([]interface{}); ok {
-					var totalRx, totalTx uint32
+				afMap := make(map[string]bool)
+
+				// 1. Process afi-safi array if present (full BGP neighbor update)
+				if afiList, ok := nMap["afi-safi"].([]interface{}); ok {
 					for _, item := range afiList {
 						if itemMap, ok := item.(map[string]interface{}); ok {
 							afName, _ := itemMap["afi-safi-name"].(string)
 							adminState, _ := itemMap["admin-state"].(string)
 							operState, _ := itemMap["oper-state"].(string)
 
-							if afName != "" {
-								cleanName := afName
-								if idx := strings.Index(cleanName, ":"); idx != -1 {
-									cleanName = cleanName[idx+1:]
-								}
-								isUp := (operState == "up" || operState == "enable" || operState == "") &&
-									(adminState == "enable" || adminState == "up" || adminState == "")
-								if isUp {
-									afMap[cleanName] = true
-								} else if operState == "down" || adminState == "disable" {
-									delete(afMap, cleanName)
-								}
-							}
+							cleanAf := strings.TrimPrefix(afName, "srl_nokia-common:")
+							cleanAf = strings.TrimPrefix(cleanAf, "srl_nokia-bgp:")
 
-							if rx, ok := itemMap["received-routes"].(float64); ok {
-								totalRx += uint32(rx)
-							}
-							if tx, ok := itemMap["sent-routes"].(float64); ok {
-								totalTx += uint32(tx)
+							isDown := strings.HasPrefix(adminState, "disab") || strings.HasPrefix(operState, "disab") || operState == "down"
+							if !isDown {
+								afMap[cleanAf] = true
+								afStat := peer.AFStats[cleanAf]
+								if rx, ok := parseUint32Val(itemMap["received-routes"]); ok {
+									afStat.RxPrefixes = rx
+								}
+								if tx, ok := parseUint32Val(itemMap["sent-routes"]); ok {
+									afStat.TxPrefixes = tx
+								}
+								peer.AFStats[cleanAf] = afStat
+							} else {
+								delete(afMap, cleanAf)
+								delete(peer.AFStats, cleanAf)
 							}
 						}
 					}
-					peer.RxPrefixes = totalRx
-					peer.TxPrefixes = totalTx
-				} else if rxVal, ok := dataMap["received-routes"].(float64); ok {
-					peer.RxPrefixes = uint32(rxVal)
-					if txVal, ok := dataMap["sent-routes"].(float64); ok {
-						peer.TxPrefixes = uint32(txVal)
+				} else {
+					for af := range peer.AFStats {
+						afMap[af] = true
 					}
-				}
-
-				// 2. Process received-afi-safi array if present
-				if rxAfiList, ok := dataMap["received-afi-safi"].([]interface{}); ok {
-					for _, item := range rxAfiList {
-						if afName, ok := item.(string); ok && afName != "" {
-							if idx := strings.Index(afName, ":"); idx != -1 {
-								afName = afName[idx+1:]
-							}
-							afMap[afName] = true
+					// Check if nMap is itself an afi-safi subpath map (from incremental subpath update)
+					subAfName, _ := nMap["afi-safi-name"].(string)
+					if subAfName == "" {
+						subAfName = getElemKey(u.GetPath(), "afi-safi", "afi-safi-name")
+					}
+					if subAfName != "" {
+						cleanAf := strings.TrimPrefix(subAfName, "srl_nokia-common:")
+						cleanAf = strings.TrimPrefix(cleanAf, "srl_nokia-bgp:")
+						afStat := peer.AFStats[cleanAf]
+						if rx, ok := parseUint32Val(nMap["received-routes"]); ok {
+							afStat.RxPrefixes = rx
 						}
-					}
-				}
-
-				// 3. Process sent-end-of-rib array if present
-				if sentRibList, ok := dataMap["sent-end-of-rib"].([]interface{}); ok {
-					for _, item := range sentRibList {
-						if afName, ok := item.(string); ok && afName != "" {
-							if idx := strings.Index(afName, ":"); idx != -1 {
-								afName = afName[idx+1:]
-							}
-							afMap[afName] = true
+						if tx, ok := parseUint32Val(nMap["sent-routes"]); ok {
+							afStat.TxPrefixes = tx
+						}
+						peer.AFStats[cleanAf] = afStat
+						adminState, _ := nMap["admin-state"].(string)
+						operState, _ := nMap["oper-state"].(string)
+						isDown := strings.HasPrefix(adminState, "disab") || strings.HasPrefix(operState, "disab") || operState == "down"
+						if isDown {
+							delete(afMap, cleanAf)
+							delete(peer.AFStats, cleanAf)
+						} else {
+							afMap[cleanAf] = true
 						}
 					}
 				}
 
 				// Convert afMap back to deterministically ordered AddrFamilies slice
-				if len(afMap) > 0 {
-					var mergedAfs []string
-					order := []string{"ipv4-unicast", "evpn", "ipv6-unicast", "l3vpn-ipv4-unicast", "route-target"}
-					for _, name := range order {
-						if afMap[name] {
-							mergedAfs = append(mergedAfs, name)
-							delete(afMap, name)
-						}
-					}
-					for name := range afMap {
+				var mergedAfs []string
+				order := []string{"ipv4-unicast", "evpn", "ipv6-unicast", "l3vpn-ipv4-unicast", "route-target"}
+				for _, name := range order {
+					if afMap[name] {
 						mergedAfs = append(mergedAfs, name)
+						delete(afMap, name)
 					}
-					peer.AddrFamilies = mergedAfs
+				}
+				for name := range afMap {
+					mergedAfs = append(mergedAfs, name)
 				}
 
-				if maintGrp, ok := dataMap["maintenance-group"].(string); ok {
+				// Purge any inactive address family without active routes or operational state
+				var cleanActive []string
+				for _, af := range mergedAfs {
+					if af == "ipv6-unicast" || af == "route-target" {
+						st, ok := peer.AFStats[af]
+						if !ok || (st.RxPrefixes == 0 && st.TxPrefixes == 0) {
+							continue
+						}
+					}
+					cleanActive = append(cleanActive, af)
+				}
+				peer.AddrFamilies = cleanActive
+
+				// Calculate total Rx/Tx prefixes as sum across active address families
+				var totalRx, totalTx uint32
+				for _, af := range peer.AddrFamilies {
+					if st, ok := peer.AFStats[af]; ok {
+						totalRx += st.RxPrefixes
+						totalTx += st.TxPrefixes
+					}
+				}
+				peer.RxPrefixes = totalRx
+				peer.TxPrefixes = totalTx
+
+				if maintGrp, ok := nMap["maintenance-group"].(string); ok {
 					peer.MaintenanceGroup = maintGrp
 				}
-				if underMaint, ok := dataMap["under-maintenance"].(bool); ok {
+				if underMaint, ok := nMap["under-maintenance"].(bool); ok {
 					peer.InMaintenance = underMaint
 				}
 

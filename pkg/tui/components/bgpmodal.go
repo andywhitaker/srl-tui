@@ -61,6 +61,22 @@ func RenderBGPDetailModal(entry ndk.BGPPeerState, pal theme.Palette, width, heig
 		afListStr = "ipv4-unicast"
 	}
 
+	var pfxParts []string
+	if len(entry.AddrFamilies) > 0 {
+		for _, af := range entry.AddrFamilies {
+			if st, ok := entry.AFStats[af]; ok {
+				pfxParts = append(pfxParts, fmt.Sprintf("%d/%d", st.RxPrefixes, st.TxPrefixes))
+			} else {
+				pfxParts = append(pfxParts, fmt.Sprintf("%d/%d", entry.RxPrefixes, entry.TxPrefixes))
+			}
+		}
+	}
+	pfxSummaryStr := strings.Join(pfxParts, ", ")
+	if pfxSummaryStr == "" {
+		pfxSummaryStr = fmt.Sprintf("%d/%d", entry.RxPrefixes, entry.TxPrefixes)
+	}
+	pfxSummaryStr += fmt.Sprintf(" (Total: %d rx / %d tx)", entry.RxPrefixes, entry.TxPrefixes)
+
 	infoRows := []string{
 		fmt.Sprintf("  %-20s %s", lipgloss.NewStyle().Foreground(pal.Subtext).Render("Neighbor IP:"), lipgloss.NewStyle().Bold(true).Foreground(pal.Text).Render(entry.NeighborIP)),
 		fmt.Sprintf("  %-20s %s", lipgloss.NewStyle().Foreground(pal.Subtext).Render("Peer ASN:"), lipgloss.NewStyle().Foreground(pal.Secondary).Render(fmt.Sprintf("AS%d", entry.PeerASN))),
@@ -70,7 +86,7 @@ func RenderBGPDetailModal(entry ndk.BGPPeerState, pal theme.Palette, width, heig
 		fmt.Sprintf("  %-20s %s", lipgloss.NewStyle().Foreground(pal.Subtext).Render("Local Interface:"), lipgloss.NewStyle().Foreground(pal.Warning).Render(entry.Interface)),
 		fmt.Sprintf("  %-20s %s", lipgloss.NewStyle().Foreground(pal.Subtext).Render("Uptime:"), lipgloss.NewStyle().Foreground(pal.Text).Render(entry.Uptime)),
 		fmt.Sprintf("  %-20s %s", lipgloss.NewStyle().Foreground(pal.Subtext).Render("Active AFs:"), lipgloss.NewStyle().Foreground(pal.Primary).Render(afListStr)),
-		fmt.Sprintf("  %-20s %d received / %d sent", lipgloss.NewStyle().Foreground(pal.Subtext).Render("Prefixes:"), entry.RxPrefixes, entry.TxPrefixes),
+		fmt.Sprintf("  %-20s %s", lipgloss.NewStyle().Foreground(pal.Subtext).Render("Prefixes (Rx/Tx):"), pfxSummaryStr),
 		fmt.Sprintf("  %-20s %s", lipgloss.NewStyle().Foreground(pal.Subtext).Render("Maintenance Group:"), lipgloss.NewStyle().Foreground(pal.Text).Render(grpName)),
 		fmt.Sprintf("  %-20s %s", lipgloss.NewStyle().Foreground(pal.Subtext).Render("Maintenance Status:"), maintStyle.Render(maintText)),
 	}
@@ -85,10 +101,22 @@ func RenderBGPDetailModal(entry ndk.BGPPeerState, pal theme.Palette, width, heig
 	var afRows []string
 	afRows = append(afRows, afHdr, afTableHdrs, afDivider)
 	if len(entry.AddrFamilies) == 0 {
-		afRows = append(afRows, fmt.Sprintf("    %-20s %-16d %-16d", "ipv4-unicast", entry.RxPrefixes, entry.TxPrefixes))
+		rx := entry.RxPrefixes
+		tx := entry.TxPrefixes
+		if st, ok := entry.AFStats["ipv4-unicast"]; ok {
+			rx = st.RxPrefixes
+			tx = st.TxPrefixes
+		}
+		afRows = append(afRows, fmt.Sprintf("    %-20s %-16d %-16d", "ipv4-unicast", rx, tx))
 	} else {
 		for _, af := range entry.AddrFamilies {
-			afRows = append(afRows, fmt.Sprintf("    %-20s %-16d %-16d", af, entry.RxPrefixes, entry.TxPrefixes))
+			rx := entry.RxPrefixes
+			tx := entry.TxPrefixes
+			if st, ok := entry.AFStats[af]; ok {
+				rx = st.RxPrefixes
+				tx = st.TxPrefixes
+			}
+			afRows = append(afRows, fmt.Sprintf("    %-20s %-16d %-16d", af, rx, tx))
 		}
 	}
 	afBox := strings.Join(afRows, "\n")

@@ -29,19 +29,25 @@ type PortState struct {
 	RawJSON     string    `json:"raw_json"`
 }
 
+type AFStats struct {
+	RxPrefixes uint32 `json:"rx_prefixes"`
+	TxPrefixes uint32 `json:"tx_prefixes"`
+}
+
 type BGPPeerState struct {
-	NeighborIP       string   `json:"neighbor_ip"`
-	PeerASN          uint32   `json:"peer_asn"`
-	LocalASN         uint32   `json:"local_asn"`
-	SessionState     string   `json:"session_state"` // "ESTABLISHED", "IDLE", "ACTIVE", etc.
-	PeerType         string   `json:"peer-type"`     // "INTERNAL", "EXTERNAL"
-	Interface        string   `json:"interface"`
-	Uptime           string   `json:"uptime"`
-	RxPrefixes       uint32   `json:"rx_prefixes"`
-	TxPrefixes       uint32   `json:"tx_prefixes"`
-	AddrFamilies     []string `json:"addr_families"`     // e.g. ["ipv4-unicast", "evpn"]
-	MaintenanceGroup string   `json:"maintenance_group"` // e.g. "maint-bgp-10-1-10-10"
-	InMaintenance    bool     `json:"in_maintenance"`    // true if neighbor is in active maintenance mode
+	NeighborIP       string             `json:"neighbor_ip"`
+	PeerASN          uint32             `json:"peer_asn"`
+	LocalASN         uint32             `json:"local_asn"`
+	SessionState     string             `json:"session_state"` // "ESTABLISHED", "IDLE", "ACTIVE", etc.
+	PeerType         string             `json:"peer-type"`     // "INTERNAL", "EXTERNAL"
+	Interface        string             `json:"interface"`
+	Uptime           string             `json:"uptime"`
+	RxPrefixes       uint32             `json:"rx_prefixes"`
+	TxPrefixes       uint32             `json:"tx_prefixes"`
+	AFStats          map[string]AFStats `json:"af_stats"`          // Per-address family stats e.g. "evpn": {Rx: 39, Tx: 13}
+	AddrFamilies     []string           `json:"addr_families"`     // e.g. ["ipv4-unicast", "evpn"]
+	MaintenanceGroup string             `json:"maintenance_group"` // e.g. "maint-bgp-10-1-10-10"
+	InMaintenance    bool               `json:"in_maintenance"`    // true if neighbor is in active maintenance mode
 }
 
 type MaintenanceGroupState struct {
