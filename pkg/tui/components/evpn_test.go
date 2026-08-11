@@ -135,7 +135,7 @@ func TestEVPNMACIPColumnFullWidth(t *testing.T) {
 	}
 	pal := theme.Cyberpunk
 
-	rendered := RenderEVPNView(state, EVPNFilterAll, 0, pal, 140, 30, "", false, "", true)
+	rendered := RenderEVPNView(state, EVPNFilterAll, 0, pal, 155, 30, "", false, "", true)
 	expectedPayload := "00:11:22:33:44:55 [192.168.200.254]"
 	if !strings.Contains(rendered, expectedPayload) {
 		t.Fatalf("Expected full untruncated MAC+IP payload %q in rendered view, but was clipped/missing. Got: %s", expectedPayload, rendered)

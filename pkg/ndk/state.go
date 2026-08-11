@@ -3,6 +3,7 @@ package ndk
 import (
 	"fmt"
 	"math"
+	"strings"
 	"sync"
 	"time"
 )
@@ -29,16 +30,26 @@ type PortState struct {
 }
 
 type BGPPeerState struct {
-	NeighborIP   string `json:"neighbor_ip"`
-	PeerASN      uint32 `json:"peer_asn"`
-	LocalASN     uint32 `json:"local_asn"`
-	SessionState string `json:"session_state"` // "ESTABLISHED", "IDLE", "ACTIVE", etc.
-	PeerType     string `json:"peer-type"`     // "INTERNAL", "EXTERNAL"
-	Interface    string `json:"interface"`
-	Uptime       string `json:"uptime"`
-	RxPrefixes   uint32 `json:"rx_prefixes"`
-	TxPrefixes   uint32 `json:"tx_prefixes"`
+	NeighborIP       string   `json:"neighbor_ip"`
+	PeerASN          uint32   `json:"peer_asn"`
+	LocalASN         uint32   `json:"local_asn"`
+	SessionState     string   `json:"session_state"` // "ESTABLISHED", "IDLE", "ACTIVE", etc.
+	PeerType         string   `json:"peer-type"`     // "INTERNAL", "EXTERNAL"
+	Interface        string   `json:"interface"`
+	Uptime           string   `json:"uptime"`
+	RxPrefixes       uint32   `json:"rx_prefixes"`
+	TxPrefixes       uint32   `json:"tx_prefixes"`
+	AddrFamilies     []string `json:"addr_families"`     // e.g. ["ipv4-unicast", "evpn"]
+	MaintenanceGroup string   `json:"maintenance_group"` // e.g. "maint-bgp-10-1-10-10"
+	InMaintenance    bool     `json:"in_maintenance"`    // true if neighbor is in active maintenance mode
 }
+
+type MaintenanceGroupState struct {
+	Name       string   `json:"name"`
+	AdminState string   `json:"admin_state"` // "enable" or "disable"
+	Members    []string `json:"members"`     // Neighbor IPs in this group
+}
+
 
 type LLDPNeighbor struct {
 	LocalPort    string `json:"local_port"`
@@ -128,13 +139,14 @@ type TelemetryState struct {
 	LastSync    time.Time `json:"last_sync"`
 
 	// Network Data
-	Ports         []PortState      `json:"ports"`
-	BGPPeers      []BGPPeerState   `json:"bgp_peers"`
-	LLDPNeighbors []LLDPNeighbor   `json:"lldp_neighbors"`
-	ARPTables     []ARPEntry       `json:"arp_tables"`
-	MACTables     []MACTableEntry  `json:"mac_tables"`
-	RouteTable    []RouteEntry     `json:"route_table"`
-	EVPNRoutes    []EVPNRouteEntry `json:"evpn_routes"`
+	Ports             []PortState             `json:"ports"`
+	BGPPeers          []BGPPeerState          `json:"bgp_peers"`
+	LLDPNeighbors     []LLDPNeighbor          `json:"lldp_neighbors"`
+	ARPTables         []ARPEntry              `json:"arp_tables"`
+	MACTables         []MACTableEntry         `json:"mac_tables"`
+	RouteTable        []RouteEntry            `json:"route_table"`
+	EVPNRoutes        []EVPNRouteEntry        `json:"evpn_routes"`
+	MaintenanceGroups []MaintenanceGroupState `json:"maintenance_groups"`
 }
 
 func NewTelemetryState(numPorts int) *TelemetryState {
@@ -161,21 +173,22 @@ func NewTelemetryState(numPorts int) *TelemetryState {
 	egHist := make([]float64, histLen)
 
 	return &TelemetryState{
-		mu:             &sync.RWMutex{},
-		Hostname:       "srlinux-leaf1",
-		Platform:       "7220 IXR-D2",
-		OSVersion:      "v24.10.1",
-		StartTime:      time.Now(),
-		NDKSocketPath:  "unix:///opt/srlinux/var/run/sr_sdk_service_manager:50053",
-		IngressHistory: ingHist,
-		EgressHistory:  egHist,
-		Ports:          ports,
-		BGPPeers:       make([]BGPPeerState, 0),
-		LLDPNeighbors:  make([]LLDPNeighbor, 0),
-		ARPTables:      make([]ARPEntry, 0),
-		MACTables:      make([]MACTableEntry, 0),
-		RouteTable:     make([]RouteEntry, 0),
-		EVPNRoutes:     make([]EVPNRouteEntry, 0),
+		mu:                &sync.RWMutex{},
+		Hostname:          "srlinux-leaf1",
+		Platform:          "7220 IXR-D2",
+		OSVersion:         "v24.10.1",
+		StartTime:         time.Now(),
+		NDKSocketPath:     "unix:///opt/srlinux/var/run/sr_sdk_service_manager:50053",
+		IngressHistory:    ingHist,
+		EgressHistory:     egHist,
+		Ports:             ports,
+		BGPPeers:          make([]BGPPeerState, 0),
+		LLDPNeighbors:     make([]LLDPNeighbor, 0),
+		ARPTables:         make([]ARPEntry, 0),
+		MACTables:         make([]MACTableEntry, 0),
+		RouteTable:        make([]RouteEntry, 0),
+		EVPNRoutes:        make([]EVPNRouteEntry, 0),
+		MaintenanceGroups: make([]MaintenanceGroupState, 0),
 	}
 }
 
@@ -216,6 +229,45 @@ func (s *TelemetryState) PushTrafficSample(ingBps, egBps float64) {
 
 	s.IngressHistory = append(s.IngressHistory[1:], ingBps)
 	s.EgressHistory = append(s.EgressHistory[1:], egBps)
+}
+
+func (s *TelemetryState) ToggleNeighborMaintenance(peerIP string, enable bool, groupName string) {
+	s.Lock()
+	defer s.Unlock()
+
+	if groupName == "" {
+		groupName = fmt.Sprintf("maint-bgp-%s", strings.ReplaceAll(peerIP, ".", "-"))
+	}
+
+	adminStr := "disable"
+	if enable {
+		adminStr = "enable"
+	}
+
+	// Update or create MaintenanceGroupState
+	foundGroup := false
+	for i, g := range s.MaintenanceGroups {
+		if g.Name == groupName {
+			s.MaintenanceGroups[i].AdminState = adminStr
+			foundGroup = true
+			break
+		}
+	}
+	if !foundGroup {
+		s.MaintenanceGroups = append(s.MaintenanceGroups, MaintenanceGroupState{
+			Name:       groupName,
+			AdminState: adminStr,
+			Members:    []string{peerIP},
+		})
+	}
+
+	// Update matching BGPPeerState
+	for i, p := range s.BGPPeers {
+		if p.NeighborIP == peerIP {
+			s.BGPPeers[i].MaintenanceGroup = groupName
+			s.BGPPeers[i].InMaintenance = enable
+		}
+	}
 }
 
 func (s *TelemetryState) Snapshot() *TelemetryState {
@@ -262,7 +314,13 @@ func (s *TelemetryState) Snapshot() *TelemetryState {
 	copy(snap.Ports, s.Ports)
 
 	snap.BGPPeers = make([]BGPPeerState, len(s.BGPPeers))
-	copy(snap.BGPPeers, s.BGPPeers)
+	for i, p := range s.BGPPeers {
+		snap.BGPPeers[i] = p
+		if len(p.AddrFamilies) > 0 {
+			snap.BGPPeers[i].AddrFamilies = make([]string, len(p.AddrFamilies))
+			copy(snap.BGPPeers[i].AddrFamilies, p.AddrFamilies)
+		}
+	}
 
 	snap.LLDPNeighbors = make([]LLDPNeighbor, len(s.LLDPNeighbors))
 	copy(snap.LLDPNeighbors, s.LLDPNeighbors)
@@ -279,5 +337,16 @@ func (s *TelemetryState) Snapshot() *TelemetryState {
 	snap.EVPNRoutes = make([]EVPNRouteEntry, len(s.EVPNRoutes))
 	copy(snap.EVPNRoutes, s.EVPNRoutes)
 
+	snap.MaintenanceGroups = make([]MaintenanceGroupState, len(s.MaintenanceGroups))
+	for i, g := range s.MaintenanceGroups {
+		snap.MaintenanceGroups[i] = g
+		if len(g.Members) > 0 {
+			snap.MaintenanceGroups[i].Members = make([]string, len(g.Members))
+			copy(snap.MaintenanceGroups[i].Members, g.Members)
+		}
+	}
+
 	return snap
 }
+
+

@@ -9,7 +9,30 @@ import (
 	"srl-tui/pkg/tui/theme"
 )
 
-func RenderTopoMesh(snap *ndk.TelemetryState, focused bool, pal theme.Palette, width, height int, searchQuery string, searchActive bool, searchInputView string) string {
+func GetFilteredBGP(snap *ndk.TelemetryState, searchQuery string) []ndk.BGPPeerState {
+	var activeBgp []ndk.BGPPeerState
+	qLower := strings.ToLower(searchQuery)
+	for _, bgp := range snap.BGPPeers {
+		if !strings.HasPrefix(bgp.Interface, "mgmt") && !strings.HasPrefix(bgp.Interface, "mgmt0") {
+			if qLower != "" {
+				afStr := strings.Join(bgp.AddrFamilies, " ")
+				match := strings.Contains(strings.ToLower(bgp.NeighborIP), qLower) ||
+					strings.Contains(fmt.Sprintf("%d", bgp.PeerASN), qLower) ||
+					strings.Contains(strings.ToLower(bgp.Interface), qLower) ||
+					strings.Contains(strings.ToLower(bgp.SessionState), qLower) ||
+					strings.Contains(strings.ToLower(bgp.PeerType), qLower) ||
+					strings.Contains(strings.ToLower(afStr), qLower)
+				if !match {
+					continue
+				}
+			}
+			activeBgp = append(activeBgp, bgp)
+		}
+	}
+	return activeBgp
+}
+
+func RenderTopoMesh(snap *ndk.TelemetryState, focused bool, pal theme.Palette, width, height int, searchQuery string, searchActive bool, searchInputView string, selectedIdx int) string {
 	if width < 50 {
 		width = 50
 	}
@@ -18,23 +41,7 @@ func RenderTopoMesh(snap *ndk.TelemetryState, focused bool, pal theme.Palette, w
 	subStyle := lipgloss.NewStyle().Foreground(pal.Subtext)
 
 	// Filter BGP peers
-	var activeBgp []ndk.BGPPeerState
-	qLower := strings.ToLower(searchQuery)
-	for _, bgp := range snap.BGPPeers {
-		if !strings.HasPrefix(bgp.Interface, "mgmt") && !strings.HasPrefix(bgp.Interface, "mgmt0") {
-			if qLower != "" {
-				match := strings.Contains(strings.ToLower(bgp.NeighborIP), qLower) ||
-					strings.Contains(fmt.Sprintf("%d", bgp.PeerASN), qLower) ||
-					strings.Contains(strings.ToLower(bgp.Interface), qLower) ||
-					strings.Contains(strings.ToLower(bgp.SessionState), qLower) ||
-					strings.Contains(strings.ToLower(bgp.PeerType), qLower)
-				if !match {
-					continue
-				}
-			}
-			activeBgp = append(activeBgp, bgp)
-		}
-	}
+	activeBgp := GetFilteredBGP(snap, searchQuery)
 
 	// Build top neighbor node boxes dynamically for ALL active BGP routing adjacencies
 	var topBoxStrings []string
@@ -47,10 +54,17 @@ func RenderTopoMesh(snap *ndk.TelemetryState, focused bool, pal theme.Palette, w
 
 			stateColor := pal.Success
 			stateUpper := strings.ToUpper(bgp.SessionState)
-			if stateUpper == "CONNECT" || stateUpper == "ACTIVE" || stateUpper == "CONNECTING" {
+			if bgp.InMaintenance {
+				stateColor = pal.Warning
+			} else if stateUpper == "CONNECT" || stateUpper == "ACTIVE" || stateUpper == "CONNECTING" {
 				stateColor = pal.Warning
 			} else if stateUpper != "ESTABLISHED" {
 				stateColor = pal.Error
+			}
+
+			boxLabel := fmt.Sprintf("%s\nAS%d [%s]", bgp.NeighborIP, bgp.PeerASN, stateUpper)
+			if bgp.InMaintenance {
+				boxLabel = fmt.Sprintf("🚧 %s 🚧\nAS%d [MAINT]", bgp.NeighborIP, bgp.PeerASN)
 			}
 
 			nBox := lipgloss.NewStyle().
@@ -59,15 +73,15 @@ func RenderTopoMesh(snap *ndk.TelemetryState, focused bool, pal theme.Palette, w
 				Background(pal.Surface).
 				Padding(0, 1).
 				Align(lipgloss.Center).
-				Width(22).
-				Render(fmt.Sprintf("%s\nAS%d [%s]", bgp.NeighborIP, bgp.PeerASN, stateUpper))
+				Width(24).
+				Render(boxLabel)
 			topBoxStrings = append(topBoxStrings, nBox)
 		}
 	}
 
 	// Calculate total width of top nodes row for connector scaling
 	nodeCount := len(topBoxStrings)
-	totalWidth := nodeCount*24 + (nodeCount-1)*3
+	totalWidth := nodeCount*26 + (nodeCount-1)*3
 	if totalWidth < 60 {
 		totalWidth = 60
 	}
@@ -100,23 +114,26 @@ func RenderTopoMesh(snap *ndk.TelemetryState, focused bool, pal theme.Palette, w
 	diagramStr := lipgloss.JoinVertical(lipgloss.Left, diagramParts...)
 
 	// BGP Session Table
-	colHdrs := fmt.Sprintf("  %-16s %-10s %-10s %-16s %-16s %-10s %s",
-		"NEIGHBOR IP", "PEER AS", "TYPE", "STATE", "INTERFACE", "UPTIME", "PREFIXES (Rx/Tx)",
+	colHdrs := fmt.Sprintf("   %-18s %-10s %-10s %-16s %-16s %-18s %-10s %s",
+		"NEIGHBOR IP", "PEER AS", "TYPE", "STATE", "INTERFACE", "ACTIVE AFs", "UPTIME", "PREFIXES (Rx/Tx)",
 	)
 
 	var bgpRows []string
 	bgpRows = append(bgpRows, lipgloss.NewStyle().Bold(true).Foreground(pal.Primary).Render(colHdrs))
-	bgpRows = append(bgpRows, lipgloss.NewStyle().Foreground(pal.Muted).Render("  ──────────────── ────────── ────────── ──────────────── ──────────────── ────────── ────────────────"))
+	bgpRows = append(bgpRows, lipgloss.NewStyle().Foreground(pal.Muted).Render("  ────────────────── ────────── ────────── ──────────────── ──────────────── ────────────────── ────────── ────────────────"))
 
 	if len(activeBgp) == 0 {
 		bgpRows = append(bgpRows, lipgloss.NewStyle().Foreground(pal.Subtext).Render("  No matching BGP routing protocol adjacencies discovered"))
 	} else {
-		for _, peer := range activeBgp {
+		for i, peer := range activeBgp {
 			stateUpper := strings.ToUpper(peer.SessionState)
 			stateText := "● " + stateUpper
 			stateStyle := lipgloss.NewStyle().Foreground(pal.Success)
 
-			if stateUpper == "ACTIVE" || stateUpper == "CONNECT" || stateUpper == "CONNECTING" {
+			if peer.InMaintenance {
+				stateText = "🚧 MAINT MODE"
+				stateStyle = lipgloss.NewStyle().Foreground(pal.Warning).Bold(true)
+			} else if stateUpper == "ACTIVE" || stateUpper == "CONNECT" || stateUpper == "CONNECTING" {
 				stateText = "◯ " + stateUpper
 				stateStyle = lipgloss.NewStyle().Foreground(pal.Warning)
 			} else if stateUpper != "ESTABLISHED" {
@@ -124,15 +141,34 @@ func RenderTopoMesh(snap *ndk.TelemetryState, focused bool, pal theme.Palette, w
 				stateStyle = lipgloss.NewStyle().Foreground(pal.Error)
 			}
 
-			ipStr := lipgloss.NewStyle().Foreground(pal.Text).Render(fmt.Sprintf("%-16s", peer.NeighborIP))
+			ipDisplay := peer.NeighborIP
+			if peer.InMaintenance {
+				ipDisplay = fmt.Sprintf("🚧 %s", peer.NeighborIP)
+			}
+
+			afDisplay := strings.Join(peer.AddrFamilies, ", ")
+			if afDisplay == "" {
+				afDisplay = "ipv4-unicast"
+			}
+
+			ipStr := lipgloss.NewStyle().Foreground(pal.Text).Render(fmt.Sprintf("%-18s", ipDisplay))
 			asStr := lipgloss.NewStyle().Foreground(pal.Secondary).Render(fmt.Sprintf("%-10d", peer.PeerASN))
 			typeStr := lipgloss.NewStyle().Foreground(pal.Primary).Render(fmt.Sprintf("%-10s", peer.PeerType))
 			stStr := stateStyle.Render(fmt.Sprintf("%-16s", stateText))
 			intfStr := lipgloss.NewStyle().Foreground(pal.Warning).Render(fmt.Sprintf("%-16s", peer.Interface))
+			afStr := lipgloss.NewStyle().Foreground(pal.Primary).Render(fmt.Sprintf("%-18s", afDisplay))
 			upStr := lipgloss.NewStyle().Foreground(pal.Subtext).Render(fmt.Sprintf("%-10s", peer.Uptime))
 			pfxStr := fmt.Sprintf("%d / %d", peer.RxPrefixes, peer.TxPrefixes)
 
-			row := fmt.Sprintf("  %s %s %s %s %s %s %s", ipStr, asStr, typeStr, stStr, intfStr, upStr, pfxStr)
+			prefixPointer := "  "
+			if i == selectedIdx {
+				prefixPointer = "> "
+			}
+
+			row := fmt.Sprintf("%s%s %s %s %s %s %s %s %s", prefixPointer, ipStr, asStr, typeStr, stStr, intfStr, afStr, upStr, pfxStr)
+			if i == selectedIdx {
+				row = lipgloss.NewStyle().Background(pal.Highlight).Bold(true).Render(row)
+			}
 			bgpRows = append(bgpRows, row)
 		}
 	}
@@ -161,7 +197,7 @@ func RenderTopoMesh(snap *ndk.TelemetryState, focused bool, pal theme.Palette, w
 
 	header := fmt.Sprintf("%s %s%s",
 		titleStyle.Render("🌐 BGP ROUTING PROTOCOL TOPOLOGY & MESH"),
-		subStyle.Render("[Real-time BGP routing adjacencies & session states]"),
+		subStyle.Render("[Real-time BGP routing adjacencies & session states • Arrow Up/Down to select, Enter for details]"),
 		searchBarStr,
 	)
 

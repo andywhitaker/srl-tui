@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nokia/srlinux-ndk-go/ndk"
@@ -24,6 +25,8 @@ type NDKClient struct {
 	state         *TelemetryState
 	agentName     string
 	cancelCtx     context.CancelFunc
+	gnmiClient    pb.GNMIClient
+	mu            sync.Mutex
 	lastRxBytes   map[string]uint64
 	lastTxBytes   map[string]uint64
 	lastStatsTime time.Time
@@ -157,6 +160,10 @@ func (c *NDKClient) runGNMISession(ctx context.Context, sock string) error {
 	defer conn.Close()
 
 	gnmiClient := pb.NewGNMIClient(conn)
+	c.mu.Lock()
+	c.gnmiClient = gnmiClient
+	c.mu.Unlock()
+
 	user := os.Getenv("SRL_USERNAME")
 	if user == "" {
 		user = "admin"
@@ -185,7 +192,9 @@ func (c *NDKClient) runGNMISession(ctx context.Context, sock string) error {
 		{Elem: []*pb.PathElem{{Name: "system"}, {Name: "lldp"}}},
 		{Elem: []*pb.PathElem{{Name: "system"}, {Name: "name"}}},
 		{Elem: []*pb.PathElem{{Name: "system"}, {Name: "information"}}},
+		{Elem: []*pb.PathElem{{Name: "system"}, {Name: "maintenance"}}},
 		{Elem: []*pb.PathElem{{Name: "platform"}}},
+		{Elem: []*pb.PathElem{{Name: "network-instance", Key: map[string]string{"name": "*"}}, {Name: "bgp-rib"}}},
 	}
 
 	var subs []*pb.Subscription
@@ -211,6 +220,7 @@ func (c *NDKClient) runGNMISession(ctx context.Context, sock string) error {
 	}
 
 	go c.fetchInitialInterfaceState(streamCtx, gnmiClient)
+	go c.fetchInitialBGPRIBState(streamCtx, gnmiClient)
 
 	for {
 		resp, err := stream.Recv()
@@ -312,6 +322,28 @@ func (c *NDKClient) fetchInitialInterfaceState(parentCtx context.Context, client
 	}
 }
 
+func (c *NDKClient) fetchInitialBGPRIBState(parentCtx context.Context, client pb.GNMIClient) {
+	ctx, cancel := context.WithTimeout(parentCtx, 5*time.Second)
+	defer cancel()
+
+	getResp, err := client.Get(ctx, &pb.GetRequest{
+		Path: []*pb.Path{
+			{Elem: []*pb.PathElem{
+				{Name: "network-instance", Key: map[string]string{"name": "default"}},
+				{Name: "bgp-rib"},
+			}},
+		},
+		Encoding: pb.Encoding_JSON_IETF,
+	})
+	if err != nil {
+		return
+	}
+
+	for _, n := range getResp.GetNotification() {
+		c.parseGNMIStreamNotification(n)
+	}
+}
+
 func (c *NDKClient) ensurePortExistsLocked(portNum int) int {
 	if portNum < 1 {
 		return 0
@@ -345,21 +377,42 @@ func (c *NDKClient) ensurePortExistsLocked(portNum int) int {
 }
 
 func isEVPNRouteInstalled(r EVPNRouteEntry, macMap map[string]MACTableEntry, arpMap map[string]ARPEntry, routeMap map[string]RouteEntry, activeVTEPs []string) bool {
+	if len(macMap) == 0 && len(arpMap) == 0 && len(routeMap) == 0 && len(activeVTEPs) == 0 {
+		return false
+	}
+
 	switch r.RouteType {
 	case 2:
 		if r.MAC != "" {
 			if _, installed := macMap[strings.ToUpper(r.MAC)]; installed {
 				return true
 			}
-		}
-		if r.IP != "" {
-			if arp, installed := arpMap[r.IP]; installed && (arp.EntryType == "evpn" || arp.EntryType == "static") {
+			if _, installed := macMap[strings.ToLower(r.MAC)]; installed {
 				return true
 			}
 		}
-		return false
+		if r.IP != "" {
+			if arp, installed := arpMap[r.IP]; installed && (arp.EntryType == "evpn" || arp.EntryType == "static" || arp.EntryType == "dynamic") {
+				return true
+			}
+		}
+		if r.VNI != "" {
+			for _, m := range macMap {
+				if strings.Contains(m.VTEP, r.VNI) || strings.Contains(m.Interface, r.VNI) {
+					return true
+				}
+			}
+		}
+		return len(macMap) > 0 || len(arpMap) > 0
 
 	case 3:
+		if r.VNI != "" {
+			for _, m := range macMap {
+				if strings.Contains(m.VTEP, r.VNI) || strings.Contains(m.Interface, r.VNI) {
+					return true
+				}
+			}
+		}
 		if r.NextHop != "" {
 			for _, vtep := range activeVTEPs {
 				if vtep == r.NextHop {
@@ -367,7 +420,7 @@ func isEVPNRouteInstalled(r EVPNRouteEntry, macMap map[string]MACTableEntry, arp
 				}
 			}
 		}
-		return false
+		return len(macMap) > 0 || len(arpMap) > 0
 
 	case 5:
 		if r.Prefix != "" {
@@ -377,7 +430,7 @@ func isEVPNRouteInstalled(r EVPNRouteEntry, macMap map[string]MACTableEntry, arp
 				}
 			}
 		}
-		return false
+		return len(routeMap) > 0 || len(macMap) > 0
 
 	default:
 		return false
@@ -389,7 +442,8 @@ func isSelfOriginatedEVPNRoute(r EVPNRouteEntry, routeMap map[string]RouteEntry,
 		return false
 	}
 	for _, rt := range routeMap {
-		if (rt.Protocol == "local" || rt.Protocol == "direct" || rt.Protocol == "connected" || rt.Protocol == "system") && strings.HasPrefix(rt.Prefix, r.NextHop+"/") {
+		cleanPfx := strings.Split(rt.Prefix, "/")[0]
+		if (rt.Protocol == "local" || rt.Protocol == "direct" || rt.Protocol == "connected" || rt.Protocol == "system") && cleanPfx == r.NextHop {
 			return true
 		}
 	}
@@ -399,6 +453,23 @@ func isSelfOriginatedEVPNRoute(r EVPNRouteEntry, routeMap map[string]RouteEntry,
 		}
 	}
 	return false
+}
+
+func evpnRouteKey(r EVPNRouteEntry) string {
+	switch r.RouteType {
+	case 2:
+		return fmt.Sprintf("2-%s-%s-%s-%s", r.RD, r.MAC, r.IP, r.NextHop)
+	case 3:
+		return fmt.Sprintf("3-%s-%s", r.RD, r.NextHop)
+	case 5:
+		return fmt.Sprintf("5-%s-%s-%s", r.RD, r.Prefix, r.NextHop)
+	default:
+		return fmt.Sprintf("%d-%s-%s-%s-%s-%s", r.RouteType, r.RD, r.MAC, r.IP, r.Prefix, r.NextHop)
+	}
+}
+
+func (c *NDKClient) ParseGNMIStreamNotificationPublic(notif *pb.Notification) {
+	c.parseGNMIStreamNotification(notif)
 }
 
 func (c *NDKClient) parseGNMIStreamNotification(notif *pb.Notification) {
@@ -427,7 +498,7 @@ func (c *NDKClient) parseGNMIStreamNotification(notif *pb.Notification) {
 
 	var evpnMap = make(map[string]EVPNRouteEntry)
 	for _, e := range c.state.EVPNRoutes {
-		key := fmt.Sprintf("%d-%s-%s-%s-%s-%s", e.RouteType, e.RD, e.MAC, e.IP, e.Prefix, e.NextHop)
+		key := evpnRouteKey(e)
 		evpnMap[key] = e
 	}
 	c.state.RUnlock()
@@ -493,9 +564,13 @@ func (c *NDKClient) parseGNMIStreamNotification(notif *pb.Notification) {
 		}
 
 		jsonVal := u.GetVal().GetJsonIetfVal()
+		var rootVal interface{}
 		var dataMap map[string]interface{}
 		if len(jsonVal) > 0 {
-			_ = json.Unmarshal(jsonVal, &dataMap)
+			_ = json.Unmarshal(jsonVal, &rootVal)
+			if m, ok := rootVal.(map[string]interface{}); ok {
+				dataMap = m
+			}
 		}
 
 		// 0. Interface State Updates
@@ -666,15 +741,10 @@ func (c *NDKClient) parseGNMIStreamNotification(notif *pb.Notification) {
 					peer.PeerType = "EBGP"
 				}
 
-				if peer.LocalASN == 0 {
-					peer.LocalASN = 65000
-				}
-				if peer.Interface == "" {
-					localIntf := "ethernet-1/1.0"
-					if strings.HasPrefix(peerIP, "10.1.20.") {
-						localIntf = "ethernet-1/2.0"
-					}
+				if localIntf, ok := dataMap["local-interface"].(string); ok && localIntf != "" {
 					peer.Interface = localIntf
+				} else if peer.Interface == "" {
+					peer.Interface = "-"
 				}
 
 				if stateStr != "" {
@@ -701,11 +771,35 @@ func (c *NDKClient) parseGNMIStreamNotification(notif *pb.Notification) {
 					peer.Uptime = "-"
 				}
 
-				// Prefixes Rx/Tx Counters: sum received-routes and sent-routes from afi-safi
+				// Build / merge active address-families map for peer
+				afMap := make(map[string]bool)
+				for _, existingAf := range peer.AddrFamilies {
+					afMap[existingAf] = true
+				}
+
+				// 1. Process afi-safi array if present
 				if afiList, ok := dataMap["afi-safi"].([]interface{}); ok {
 					var totalRx, totalTx uint32
 					for _, item := range afiList {
 						if itemMap, ok := item.(map[string]interface{}); ok {
+							afName, _ := itemMap["afi-safi-name"].(string)
+							adminState, _ := itemMap["admin-state"].(string)
+							operState, _ := itemMap["oper-state"].(string)
+
+							if afName != "" {
+								cleanName := afName
+								if idx := strings.Index(cleanName, ":"); idx != -1 {
+									cleanName = cleanName[idx+1:]
+								}
+								isUp := (operState == "up" || operState == "enable" || operState == "") &&
+									(adminState == "enable" || adminState == "up" || adminState == "")
+								if isUp {
+									afMap[cleanName] = true
+								} else if operState == "down" || adminState == "disable" {
+									delete(afMap, cleanName)
+								}
+							}
+
 							if rx, ok := itemMap["received-routes"].(float64); ok {
 								totalRx += uint32(rx)
 							}
@@ -723,8 +817,124 @@ func (c *NDKClient) parseGNMIStreamNotification(notif *pb.Notification) {
 					}
 				}
 
+				// 2. Process received-afi-safi array if present
+				if rxAfiList, ok := dataMap["received-afi-safi"].([]interface{}); ok {
+					for _, item := range rxAfiList {
+						if afName, ok := item.(string); ok && afName != "" {
+							if idx := strings.Index(afName, ":"); idx != -1 {
+								afName = afName[idx+1:]
+							}
+							afMap[afName] = true
+						}
+					}
+				}
+
+				// 3. Process sent-end-of-rib array if present
+				if sentRibList, ok := dataMap["sent-end-of-rib"].([]interface{}); ok {
+					for _, item := range sentRibList {
+						if afName, ok := item.(string); ok && afName != "" {
+							if idx := strings.Index(afName, ":"); idx != -1 {
+								afName = afName[idx+1:]
+							}
+							afMap[afName] = true
+						}
+					}
+				}
+
+				// Convert afMap back to deterministically ordered AddrFamilies slice
+				if len(afMap) > 0 {
+					var mergedAfs []string
+					order := []string{"ipv4-unicast", "evpn", "ipv6-unicast", "l3vpn-ipv4-unicast", "route-target"}
+					for _, name := range order {
+						if afMap[name] {
+							mergedAfs = append(mergedAfs, name)
+							delete(afMap, name)
+						}
+					}
+					for name := range afMap {
+						mergedAfs = append(mergedAfs, name)
+					}
+					peer.AddrFamilies = mergedAfs
+				}
+
+				if maintGrp, ok := dataMap["maintenance-group"].(string); ok {
+					peer.MaintenanceGroup = maintGrp
+				}
+				if underMaint, ok := dataMap["under-maintenance"].(bool); ok {
+					peer.InMaintenance = underMaint
+				}
+
 				bgpPeerMap[peerIP] = peer
 			}
+		}
+
+		// System Maintenance Group Updates
+		if strings.Contains(pathStr, "/system/maintenance") {
+			c.state.Lock()
+			var parseGroup func(gMap map[string]interface{})
+			parseGroup = func(gMap map[string]interface{}) {
+				grpName, _ := gMap["name"].(string)
+				if grpName == "" {
+					return
+				}
+				adminStr := "disable"
+				if mm, ok := gMap["maintenance-mode"].(map[string]interface{}); ok {
+					if st, ok := mm["admin-state"].(string); ok && st != "" {
+						adminStr = st
+					}
+				} else if st, ok := gMap["admin-state"].(string); ok && st != "" {
+					adminStr = st
+				}
+
+				var members []string
+				if membersMap, ok := gMap["members"].(map[string]interface{}); ok {
+					if bgpMap, ok := membersMap["bgp"].(map[string]interface{}); ok {
+						if netInstList, ok := bgpMap["network-instance"].([]interface{}); ok {
+							for _, niItem := range netInstList {
+								if niMap, ok := niItem.(map[string]interface{}); ok {
+									if nbrList, ok := niMap["neighbor"].([]interface{}); ok {
+										for _, nbr := range nbrList {
+											if nbrIP, ok := nbr.(string); ok && nbrIP != "" {
+												members = append(members, nbrIP)
+											}
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+
+				found := false
+				for i, g := range c.state.MaintenanceGroups {
+					if g.Name == grpName {
+						c.state.MaintenanceGroups[i].AdminState = adminStr
+						if len(members) > 0 {
+							c.state.MaintenanceGroups[i].Members = members
+						}
+						found = true
+						break
+					}
+				}
+				if !found {
+					c.state.MaintenanceGroups = append(c.state.MaintenanceGroups, MaintenanceGroupState{
+						Name:       grpName,
+						AdminState: adminStr,
+						Members:    members,
+					})
+				}
+			}
+
+			if grpList, ok := dataMap["group"].([]interface{}); ok {
+				for _, gItem := range grpList {
+					if gMap, ok := gItem.(map[string]interface{}); ok {
+						parseGroup(gMap)
+					}
+				}
+			} else {
+				parseGroup(dataMap)
+			}
+			c.state.Unlock()
 		}
 
 		// 2. ARP Table Updates
@@ -738,39 +948,25 @@ func (c *NDKClient) parseGNMIStreamNotification(notif *pb.Notification) {
 				continue
 			}
 
+			arpIntf, _ := dataMap["interface"].(string)
+			if arpIntf == "" {
+				arpIntf = getElemKey(u.GetPath(), "subinterface", "name")
+			}
+			if arpIntf == "" {
+				arpIntf = getElemKey(u.GetPath(), "interface", "name")
+			}
+			if arpIntf == "" {
+				arpIntf = "-"
+			}
+
 			if ipAddr != "" && macAddr != "" {
 				arpMap[ipAddr] = ARPEntry{
 					IPAddress:  ipAddr,
 					MACAddress: strings.ToUpper(macAddr),
-					Interface:  "ethernet-1/1.0",
+					Interface:  arpIntf,
 					NetInst:    netInst,
 					EntryType:  origin,
 					ExpirySec:  300,
-				}
-
-				if origin == "evpn" {
-					candidate := EVPNRouteEntry{RouteType: 2, MAC: strings.ToUpper(macAddr), IP: ipAddr}
-					st := "r*"
-					if isEVPNRouteInstalled(candidate, macMap, arpMap, routeMap, activeVTEPs) {
-						st = "u*>"
-					}
-					evpnKey := fmt.Sprintf("2-2.2.2.2:10010-%s-%s--2.2.2.2", strings.ToUpper(macAddr), ipAddr)
-					evpnMap[evpnKey] = EVPNRouteEntry{
-						RouteType:  2,
-						RD:         "2.2.2.2:10010",
-						RT:         "10010:10010",
-						VNI:        "10010",
-						MAC:        strings.ToUpper(macAddr),
-						IP:         ipAddr,
-						NextHop:    "2.2.2.2",
-						Neighbor:   "10.1.10.10",
-						Originator: netInst,
-						Status:     st,
-						PathVersions: []EVPNPathVersion{
-							{Neighbor: "10.1.10.10", NextHop: "2.2.2.2", StatusCode: st, PathID: 0},
-							{Neighbor: "10.1.20.20", NextHop: "2.2.2.2", StatusCode: "*", PathID: 0},
-						},
-					}
 				}
 			}
 		}
@@ -810,32 +1006,25 @@ func (c *NDKClient) parseGNMIStreamNotification(notif *pb.Notification) {
 				}
 
 				var nextHops []string
-				cleanNH := "direct"
-				if cleanOwner == "bgp" {
-					if prefix == "2.2.2.2/32" || prefix == "3.3.3.3/32" || prefix == "4.4.4.4/32" {
-						nextHops = []string{"10.1.10.10", "10.1.20.20"}
-						cleanNH = "10.1.10.10, 10.1.20.20"
-					} else if strings.HasPrefix(prefix, "192.168.10.") || strings.HasPrefix(prefix, "192.168.20.") {
-						nextHops = []string{"2.2.2.2", "3.3.3.3", "4.4.4.4"}
-						cleanNH = "2.2.2.2, 3.3.3.3, 4.4.4.4"
-					} else if prefix == "10.10.10.10/32" {
-						nextHops = []string{"10.1.10.10"}
-						cleanNH = "10.1.10.10"
-					} else if prefix == "20.20.20.20/32" {
-						nextHops = []string{"10.1.20.20"}
-						cleanNH = "10.1.20.20"
-					} else {
-						nextHops = []string{"10.1.10.10"}
-						cleanNH = "10.1.10.10"
+				cleanNH := ""
+				if activeNH, ok := rMap["active-next-hop"].(string); ok && activeNH != "" && activeNH != netInst {
+					cleanNH = activeNH
+					nextHops = []string{activeNH}
+				} else if nhList, ok := rMap["next-hop"].([]interface{}); ok {
+					for _, nhItem := range nhList {
+						if nhMap, ok := nhItem.(map[string]interface{}); ok {
+							if ip, ok := nhMap["ip-address"].(string); ok && ip != "" {
+								nextHops = append(nextHops, ip)
+							}
+						}
 					}
-				} else {
-					if activeNH, ok := rMap["active-next-hop"].(string); ok && activeNH != "" && activeNH != netInst {
-						cleanNH = activeNH
-						nextHops = []string{activeNH}
-					} else {
-						cleanNH = "direct"
-						nextHops = []string{"direct"}
+					if len(nextHops) > 0 {
+						cleanNH = strings.Join(nextHops, ", ")
 					}
+				}
+				if cleanNH == "" {
+					cleanNH = "direct"
+					nextHops = []string{"direct"}
 				}
 
 				pref, _ := rMap["preference"].(float64)
@@ -851,31 +1040,6 @@ func (c *NDKClient) parseGNMIStreamNotification(notif *pb.Notification) {
 						Preference: uint32(pref),
 						Metric:     uint32(metric),
 						NetInst:    netInst,
-					}
-
-					if cleanOwner == "bgp" && (strings.HasPrefix(prefix, "192.168.10.") || strings.HasPrefix(prefix, "192.168.20.")) {
-						rd := fmt.Sprintf("%s:10000", cleanNH)
-						evpnKey := fmt.Sprintf("5-%s---%s-%s", rd, prefix, cleanNH)
-						candidate := EVPNRouteEntry{RouteType: 5, Prefix: prefix}
-						st := "r*"
-						if isEVPNRouteInstalled(candidate, macMap, arpMap, routeMap, activeVTEPs) {
-							st = "u*>"
-						}
-						evpnMap[evpnKey] = EVPNRouteEntry{
-							RouteType:  5,
-							RD:         rd,
-							RT:         "10000:10000",
-							VNI:        "10000",
-							Prefix:     prefix,
-							NextHop:    cleanNH,
-							Neighbor:   "10.1.10.10",
-							Originator: netInst,
-							Status:     st,
-							PathVersions: []EVPNPathVersion{
-								{Neighbor: "10.1.10.10", NextHop: cleanNH, StatusCode: st, PathID: 0},
-								{Neighbor: "10.1.20.20", NextHop: cleanNH, StatusCode: "*", PathID: 0},
-							},
-						}
 					}
 				}
 			}
@@ -920,15 +1084,6 @@ func (c *NDKClient) parseGNMIStreamNotification(notif *pb.Notification) {
 					vtepStr = vIP
 				}
 			}
-			if vtepStr == "" && (macType == "evpn" || macType == "evpn-static" || strings.Contains(destIntf, "vxlan")) {
-				if strings.Contains(destIntf, "vxlan0.101") || netInst == "app" {
-					vtepStr = "2.2.2.2:10010"
-				} else if strings.Contains(destIntf, "vxlan0.102") || netInst == "web" {
-					vtepStr = "2.2.2.2:10020"
-				} else {
-					vtepStr = "2.2.2.2:10000"
-				}
-			}
 
 			if macAddr != "" {
 				macMap[macAddr] = MACTableEntry{
@@ -937,42 +1092,6 @@ func (c *NDKClient) parseGNMIStreamNotification(notif *pb.Notification) {
 					Interface:  destIntf,
 					Type:       macType,
 					VTEP:       vtepStr,
-				}
-
-				if macType == "evpn" || macType == "evpn-static" || strings.Contains(destIntf, "vxlan") {
-					vIP := "2.2.2.2"
-					vVNI := "10010"
-					if vtepStr != "" && strings.Contains(vtepStr, ":") {
-						vParts := strings.Split(vtepStr, ":")
-						vIP = vParts[0]
-						vVNI = vParts[1]
-					}
-					rd := fmt.Sprintf("%s:%s", vIP, vVNI)
-					rt := fmt.Sprintf("%s:%s", vVNI, vVNI)
-
-					candidate := EVPNRouteEntry{RouteType: 2, MAC: strings.ToUpper(macAddr)}
-					statusStr := "r*"
-					if isEVPNRouteInstalled(candidate, macMap, arpMap, routeMap, activeVTEPs) {
-						statusStr = "u*>"
-					}
-
-					evpnKey := fmt.Sprintf("2-%s-%s---%s", rd, strings.ToUpper(macAddr), vIP)
-					evpnMap[evpnKey] = EVPNRouteEntry{
-						RouteType:  2,
-						RD:         rd,
-						RT:         rt,
-						VNI:        vVNI,
-						MAC:        strings.ToUpper(macAddr),
-						IP:         "", // MAC-Only Type 2
-						NextHop:    vIP,
-						Neighbor:   "10.1.10.10",
-						Originator: netInst,
-						Status:     statusStr,
-						PathVersions: []EVPNPathVersion{
-							{Neighbor: "10.1.10.10", NextHop: vIP, StatusCode: statusStr, PathID: 0},
-							{Neighbor: "10.1.20.20", NextHop: vIP, StatusCode: "*", PathID: 0},
-						},
-					}
 				}
 			}
 		}
@@ -1128,167 +1247,341 @@ func (c *NDKClient) parseGNMIStreamNotification(notif *pb.Notification) {
 			}
 			c.state.Unlock()
 		}
+
+		// 9. Authentic Dynamic BGP RIB EVPN Updates
+		if ribData := findBGPRIB(rootVal); ribData != nil {
+			var parseEVPNRib func(data map[string]interface{})
+			parseEVPNRib = func(data map[string]interface{}) {
+				afiList, ok := data["afi-safi"].([]interface{})
+				if !ok {
+					return
+				}
+				for _, afiItem := range afiList {
+					afiMap, ok := afiItem.(map[string]interface{})
+					if !ok {
+						continue
+					}
+					afName, _ := afiMap["afi-safi-name"].(string)
+					if !strings.Contains(afName, "evpn") {
+						continue
+					}
+					evpnMapData, ok := afiMap["evpn"].(map[string]interface{})
+					if !ok {
+						continue
+					}
+
+					ribTables := []string{"local-rib"}
+					if ribInOut, ok := evpnMapData["rib-in-out"].(map[string]interface{}); ok {
+						if _, ok := ribInOut["rib-in-post"]; ok {
+							ribTables = append(ribTables, "rib-in-post")
+						}
+					}
+
+					for _, ribTableName := range ribTables {
+						var targetRib map[string]interface{}
+						if ribTableName == "local-rib" {
+							targetRib, _ = evpnMapData["local-rib"].(map[string]interface{})
+						} else if ribInOut, ok := evpnMapData["rib-in-out"].(map[string]interface{}); ok {
+							targetRib, _ = ribInOut["rib-in-post"].(map[string]interface{})
+						}
+						if targetRib == nil {
+							continue
+						}
+
+						isPostRib := (ribTableName == "rib-in-post")
+
+						// 1. Parse MAC-IP (Type-2) Routes
+						if macList, ok := targetRib["mac-ip-route"].([]interface{}); ok {
+							for _, item := range macList {
+								rMap, ok := item.(map[string]interface{})
+								if !ok {
+									continue
+								}
+								rd, _ := rMap["route-distinguisher"].(string)
+								mac, _ := rMap["mac-address"].(string)
+								ip, _ := rMap["ip-address"].(string)
+								if ip == "0.0.0.0" {
+									ip = ""
+								}
+								nbr, _ := rMap["neighbor"].(string)
+								if nbr == "0.0.0.0" {
+									nbr = "local"
+								}
+								used, _ := rMap["used-route"].(bool)
+								best, _ := rMap["best-route"].(bool)
+								valid, _ := rMap["valid-route"].(bool)
+
+								if !valid && !best && !used {
+									continue
+								}
+
+								l1VNI := ""
+								if l1, ok := rMap["label1"].(map[string]interface{}); ok {
+									if val, ok := l1["value"].(float64); ok {
+										l1VNI = fmt.Sprintf("%d", int(val))
+									}
+								}
+								l2VNI := ""
+								if l2, ok := rMap["label2"].(map[string]interface{}); ok {
+									if val, ok := l2["value"].(float64); ok && val > 0 {
+										l2VNI = fmt.Sprintf("%d", int(val))
+									}
+								}
+
+								vniDisplay := l1VNI
+								if l2VNI != "" {
+									vniDisplay = fmt.Sprintf("%s + %s", l1VNI, l2VNI)
+								}
+								if vniDisplay == "" && strings.Contains(rd, ":") {
+									parts := strings.Split(rd, ":")
+									if len(parts) >= 2 {
+										vniDisplay = parts[1]
+										l1VNI = parts[1]
+									}
+								}
+
+								rtVal := "-"
+								if l1VNI != "" {
+									rtVal = fmt.Sprintf("%s:%s", l1VNI, l1VNI)
+								} else if strings.Contains(rd, ":") {
+									parts := strings.Split(rd, ":")
+									if len(parts) >= 2 {
+										rtVal = fmt.Sprintf("%s:%s", parts[1], parts[1])
+									}
+								}
+
+								nh := ""
+								if strings.Contains(rd, ":") {
+									nh = strings.Split(rd, ":")[0]
+								}
+
+								st := "r*"
+								if nbr != "local" && used {
+									st = "u*>"
+								} else if nbr != "local" && best {
+									st = "*>"
+								}
+
+								entry := EVPNRouteEntry{
+									RouteType:  2,
+									RD:         rd,
+									RT:         rtVal,
+									VNI:        vniDisplay,
+									MAC:        strings.ToUpper(mac),
+									IP:         ip,
+									NextHop:    nh,
+									Neighbor:   nbr,
+									Originator: "default",
+									Status:     st,
+									PathVersions: []EVPNPathVersion{
+										{Neighbor: nbr, NextHop: nh, StatusCode: st, PathID: 0},
+									},
+								}
+
+								k2 := evpnRouteKey(entry)
+								if existing, found := evpnMap[k2]; found {
+									if isPostRib {
+										// rib-in-post has real BGP peer info; replace local-rib 0.0.0.0/local entry
+										if existing.Neighbor == "local" || existing.Neighbor == "" {
+											existing.Neighbor = nbr
+											existing.PathVersions = []EVPNPathVersion{
+												{Neighbor: nbr, NextHop: nh, StatusCode: st, PathID: 0},
+											}
+										} else if nbr != "" && !strings.Contains(existing.Neighbor, nbr) {
+											existing.Neighbor = fmt.Sprintf("%s, %s", existing.Neighbor, nbr)
+											existing.PathVersions = append(existing.PathVersions, EVPNPathVersion{
+												Neighbor: nbr, NextHop: nh, StatusCode: "*", PathID: 0,
+											})
+										}
+										if st == "u*>" {
+											existing.Status = "u*>"
+											for idx := range existing.PathVersions {
+												if existing.PathVersions[idx].StatusCode == "r*" {
+													existing.PathVersions[idx].StatusCode = "*"
+												}
+											}
+										}
+										evpnMap[k2] = existing
+									}
+								} else {
+									evpnMap[k2] = entry
+								}
+							}
+						}
+
+					// 2. Parse IMET (Type-3) Routes
+					if imetList, ok := targetRib["imet-route"].([]interface{}); ok {
+						for _, item := range imetList {
+							rMap, ok := item.(map[string]interface{})
+							if !ok {
+								continue
+							}
+							rd, _ := rMap["route-distinguisher"].(string)
+							orig, _ := rMap["originating-router"].(string)
+							nbr, _ := rMap["neighbor"].(string)
+							if nbr == "0.0.0.0" {
+								nbr = "local"
+							}
+							used, _ := rMap["used-route"].(bool)
+							best, _ := rMap["best-route"].(bool)
+
+							vniVal := ""
+							if strings.Contains(rd, ":") {
+								parts := strings.Split(rd, ":")
+								if len(parts) >= 2 {
+									vniVal = parts[1]
+								}
+							}
+							nh := orig
+							if nh == "" && strings.Contains(rd, ":") {
+								nh = strings.Split(rd, ":")[0]
+							}
+
+							st := "r*"
+							if nbr != "local" && used {
+								st = "u*>"
+							} else if nbr != "local" && best {
+								st = "*>"
+							}
+
+							entry := EVPNRouteEntry{
+								RouteType:  3,
+								RD:         rd,
+								RT:         fmt.Sprintf("%s:%s", vniVal, vniVal),
+								VNI:        vniVal,
+								NextHop:    nh,
+								Neighbor:   nbr,
+								Originator: "default",
+								Status:     st,
+								PathVersions: []EVPNPathVersion{
+									{Neighbor: nbr, NextHop: nh, StatusCode: st, PathID: 0},
+								},
+							}
+
+							k3 := evpnRouteKey(entry)
+							if existing, found := evpnMap[k3]; found {
+								if isPostRib {
+									if existing.Neighbor == "local" || existing.Neighbor == "" {
+										existing.Neighbor = nbr
+										existing.PathVersions = []EVPNPathVersion{
+											{Neighbor: nbr, NextHop: nh, StatusCode: st, PathID: 0},
+										}
+									} else if nbr != "" && !strings.Contains(existing.Neighbor, nbr) {
+										existing.Neighbor = fmt.Sprintf("%s, %s", existing.Neighbor, nbr)
+										existing.PathVersions = append(existing.PathVersions, EVPNPathVersion{
+											Neighbor: nbr, NextHop: nh, StatusCode: "*", PathID: 0,
+										})
+									}
+									if st == "u*>" {
+										existing.Status = "u*>"
+										for idx := range existing.PathVersions {
+											if existing.PathVersions[idx].StatusCode == "r*" {
+												existing.PathVersions[idx].StatusCode = "*"
+											}
+										}
+									}
+									evpnMap[k3] = existing
+								}
+							} else {
+								evpnMap[k3] = entry
+							}
+						}
+					}
+
+					// 3. Parse IP Prefix (Type-5) Routes
+					if pfxList, ok := targetRib["ip-prefix-route"].([]interface{}); ok {
+						for _, item := range pfxList {
+							rMap, ok := item.(map[string]interface{})
+							if !ok {
+								continue
+							}
+							rd, _ := rMap["route-distinguisher"].(string)
+							pfx, _ := rMap["ip-prefix"].(string)
+							nbr, _ := rMap["neighbor"].(string)
+							if nbr == "0.0.0.0" {
+								nbr = "local"
+							}
+							used, _ := rMap["used-route"].(bool)
+							best, _ := rMap["best-route"].(bool)
+
+							vniVal := ""
+							if l, ok := rMap["label"].(map[string]interface{}); ok {
+								if val, ok := l["value"].(float64); ok {
+									vniVal = fmt.Sprintf("%d", int(val))
+								}
+							}
+							if vniVal == "" && strings.Contains(rd, ":") {
+								parts := strings.Split(rd, ":")
+								if len(parts) >= 2 {
+									vniVal = parts[1]
+								}
+							}
+							if vniVal == "" {
+								vniVal = "-"
+							}
+							nh := ""
+							if strings.Contains(rd, ":") {
+								nh = strings.Split(rd, ":")[0]
+							}
+
+							st := "r*"
+							if nbr != "local" && used {
+								st = "u*>"
+							} else if nbr != "local" && best {
+								st = "*>"
+							}
+
+							entry := EVPNRouteEntry{
+								RouteType:  5,
+								RD:         rd,
+								RT:         fmt.Sprintf("%s:%s", vniVal, vniVal),
+								VNI:        vniVal,
+								Prefix:     pfx,
+								NextHop:    nh,
+								Neighbor:   nbr,
+								Originator: "default",
+								Status:     st,
+								PathVersions: []EVPNPathVersion{
+									{Neighbor: nbr, NextHop: nh, StatusCode: st, PathID: 0},
+								},
+							}
+
+							k5 := evpnRouteKey(entry)
+							if existing, found := evpnMap[k5]; found {
+								if isPostRib {
+									if existing.Neighbor == "local" || existing.Neighbor == "" {
+										existing.Neighbor = nbr
+										existing.PathVersions = []EVPNPathVersion{
+											{Neighbor: nbr, NextHop: nh, StatusCode: st, PathID: 0},
+										}
+									} else if nbr != "" && !strings.Contains(existing.Neighbor, nbr) {
+										existing.Neighbor = fmt.Sprintf("%s, %s", existing.Neighbor, nbr)
+										existing.PathVersions = append(existing.PathVersions, EVPNPathVersion{
+											Neighbor: nbr, NextHop: nh, StatusCode: "*", PathID: 0,
+										})
+									}
+									if st == "u*>" {
+										existing.Status = "u*>"
+										for idx := range existing.PathVersions {
+											if existing.PathVersions[idx].StatusCode == "r*" {
+												existing.PathVersions[idx].StatusCode = "*"
+											}
+										}
+									}
+									evpnMap[k5] = existing
+								}
+							} else {
+								evpnMap[k5] = entry
+							}
+						}
+					}
+				}
+			}
+			}
+			parseEVPNRib(ribData)
+		}
 	}
 
-	// Populate BGP EVPN RIB routes based on BGP peerings & local forwarding database
-	// If node acts as BGP Route Reflector without local VRFs (e.g. Spine nodes), EVPN routes remain BGP-RIB only (r*).
-	// On Leaf nodes with matching local VRFs (VNIs 10000, 10010, 10020), EVPN routes are imported into local FIB (u*>).
-	if len(macMap) <= 2 {
-		leaves := []struct {
-			VTEP     string
-			Neighbor string
-		}{
-			{"1.1.1.1", "10.1.10.10"},
-			{"2.2.2.2", "10.1.10.10"},
-			{"3.3.3.3", "10.1.10.10"},
-			{"4.4.4.4", "10.1.10.10"},
-		}
-
-		macEntries := []struct {
-			MAC string
-			IP  string
-			VNI string
-		}{
-			{"1A:46:05:FF:00:41", "", "10010"},
-			{"1A:66:06:FF:00:41", "", "10010"},
-			{"1A:C8:07:FF:00:41", "", "10020"},
-			{"AA:C1:AB:28:FB:B5", "192.168.10.1", "10010"},
-			{"AA:C1:AB:4C:98:82", "192.168.10.2", "10010"},
-			{"AA:C1:AB:8E:D8:A1", "192.168.20.1", "10020"},
-			{"AA:C1:AB:A0:AD:54", "192.168.20.2", "10020"},
-			{"AA:C1:AB:B4:64:72", "", "10000"},
-			{"AA:C1:AB:B7:87:FD", "", "10000"},
-		}
-
-		if evpnMap == nil {
-			evpnMap = make(map[string]EVPNRouteEntry)
-		}
-
-		for _, l := range leaves {
-			// 1. Type-2 MAC-IP Advertisement Routes (9 per leaf * 4 = 36 valid routes)
-			for _, m := range macEntries {
-				rd := fmt.Sprintf("%s:%s", l.VTEP, m.VNI)
-				rt := fmt.Sprintf("%s:%s", m.VNI, m.VNI)
-				k2 := fmt.Sprintf("2-%s-%s-%s-%s", rd, m.MAC, m.IP, l.VTEP)
-
-				candidate := EVPNRouteEntry{RouteType: 2, MAC: m.MAC, IP: m.IP}
-				st := "r*"
-				if isEVPNRouteInstalled(candidate, macMap, arpMap, routeMap, activeVTEPs) {
-					st = "u*>"
-				}
-
-				evpnMap[k2] = EVPNRouteEntry{
-					RouteType:  2,
-					RD:         rd,
-					RT:         rt,
-					VNI:        m.VNI,
-					MAC:        m.MAC,
-					IP:         m.IP,
-					NextHop:    l.VTEP,
-					Neighbor:   l.Neighbor,
-					Originator: "default",
-					Status:     st,
-					PathVersions: []EVPNPathVersion{
-						{Neighbor: "10.1.10.10", NextHop: l.VTEP, StatusCode: st, PathID: 0},
-						{Neighbor: "10.1.20.20", NextHop: l.VTEP, StatusCode: "*", PathID: 0},
-					},
-				}
-			}
-
-			// 2. Type-3 Inclusive Multicast IMET Routes (2 per leaf * 4 = 8 valid routes)
-			for _, vni := range []string{"10010", "10020"} {
-				rd := fmt.Sprintf("%s:%s", l.VTEP, vni)
-				rt := fmt.Sprintf("%s:%s", vni, vni)
-				k3 := fmt.Sprintf("3-%s---%s", rd, l.VTEP)
-
-				candidate := EVPNRouteEntry{RouteType: 3, NextHop: l.VTEP}
-				st := "r*"
-				if isEVPNRouteInstalled(candidate, macMap, arpMap, routeMap, activeVTEPs) {
-					st = "u*>"
-				}
-
-				evpnMap[k3] = EVPNRouteEntry{
-					RouteType:  3,
-					RD:         rd,
-					RT:         rt,
-					VNI:        vni,
-					NextHop:    l.VTEP,
-					Neighbor:   l.Neighbor,
-					Originator: "default",
-					Status:     st,
-					PathVersions: []EVPNPathVersion{
-						{Neighbor: "10.1.10.10", NextHop: l.VTEP, StatusCode: st, PathID: 0},
-						{Neighbor: "10.1.20.20", NextHop: l.VTEP, StatusCode: "*", PathID: 0},
-					},
-				}
-			}
-
-			// 3. Type-5 IP Prefix Routes (2 per leaf * 4 = 8 valid routes)
-			for _, pfx := range []string{"192.168.10.0/24", "192.168.20.0/24"} {
-				rd := fmt.Sprintf("%s:10000", l.VTEP)
-				k5 := fmt.Sprintf("5-%s---%s-%s", rd, pfx, l.VTEP)
-
-				candidate := EVPNRouteEntry{RouteType: 5, Prefix: pfx}
-				st := "r*"
-				if isEVPNRouteInstalled(candidate, macMap, arpMap, routeMap, activeVTEPs) {
-					st = "u*>"
-				}
-
-				evpnMap[k5] = EVPNRouteEntry{
-					RouteType:  5,
-					RD:         rd,
-					RT:         "10000:10000",
-					VNI:        "10000",
-					Prefix:     pfx,
-					NextHop:    l.VTEP,
-					Neighbor:   l.Neighbor,
-					Originator: "default",
-					Status:     st,
-					PathVersions: []EVPNPathVersion{
-						{Neighbor: "10.1.10.10", NextHop: l.VTEP, StatusCode: st, PathID: 0},
-						{Neighbor: "10.1.20.20", NextHop: l.VTEP, StatusCode: "*", PathID: 0},
-					},
-				}
-			}
-		}
-	} else {
-		// Synthesize Type-3 (IMET) EVPN Routes for active VTEP Next-Hops on Leaf nodes
-		if len(activeVNIs) == 0 {
-			activeVNIs = []string{"10000", "10010", "10020"}
-		}
-		if len(activeVTEPs) == 0 {
-			activeVTEPs = []string{"2.2.2.2", "3.3.3.3", "4.4.4.4"}
-		}
-
-		for _, vtep := range activeVTEPs {
-			for _, vni := range activeVNIs {
-				rd := fmt.Sprintf("%s:%s", vtep, vni)
-				rt := fmt.Sprintf("%s:%s", vni, vni)
-				imetKey := fmt.Sprintf("3-%s---%s", rd, vtep)
-
-				candidate := EVPNRouteEntry{RouteType: 3, NextHop: vtep}
-				st := "r*"
-				if isEVPNRouteInstalled(candidate, macMap, arpMap, routeMap, activeVTEPs) {
-					st = "u*>"
-				}
-
-				evpnMap[imetKey] = EVPNRouteEntry{
-					RouteType:  3,
-					RD:         rd,
-					RT:         rt,
-					VNI:        vni,
-					NextHop:    vtep,
-					Neighbor:   "10.1.10.10",
-					Originator: "default",
-					Status:     st,
-					PathVersions: []EVPNPathVersion{
-						{Neighbor: "10.1.10.10", NextHop: vtep, StatusCode: st, PathID: 0},
-						{Neighbor: "10.1.20.20", NextHop: vtep, StatusCode: "*", PathID: 0},
-					},
-				}
-			}
-		}
-	}
 
 	// Lock state for slice swaps with STRICT DETERMINISTIC SORTING
 	c.state.Lock()
@@ -1297,6 +1590,24 @@ func (c *NDKClient) parseGNMIStreamNotification(notif *pb.Notification) {
 
 	c.state.BGPPeers = make([]BGPPeerState, 0, len(bgpPeerMap))
 	for _, v := range bgpPeerMap {
+		inMaint := v.InMaintenance
+		if !inMaint {
+			for _, mg := range c.state.MaintenanceGroups {
+				if mg.AdminState == "enable" {
+					if mg.Name != "" && mg.Name == v.MaintenanceGroup {
+						inMaint = true
+						break
+					}
+					for _, m := range mg.Members {
+						if m == v.NeighborIP {
+							inMaint = true
+							break
+						}
+					}
+				}
+			}
+		}
+		v.InMaintenance = inMaint
 		c.state.BGPPeers = append(c.state.BGPPeers, v)
 	}
 	sort.Slice(c.state.BGPPeers, func(i, j int) bool {
@@ -1332,9 +1643,7 @@ func (c *NDKClient) parseGNMIStreamNotification(notif *pb.Notification) {
 
 	c.state.EVPNRoutes = make([]EVPNRouteEntry, 0, len(evpnMap))
 	for _, v := range evpnMap {
-		if !isSelfOriginatedEVPNRoute(v, routeMap, arpMap) {
-			c.state.EVPNRoutes = append(c.state.EVPNRoutes, v)
-		}
+		c.state.EVPNRoutes = append(c.state.EVPNRoutes, v)
 	}
 	sort.SliceStable(c.state.EVPNRoutes, func(i, j int) bool {
 		if c.state.EVPNRoutes[i].RouteType != c.state.EVPNRoutes[j].RouteType {
@@ -1361,6 +1670,26 @@ func (c *NDKClient) parseGNMIStreamNotification(notif *pb.Notification) {
 		return c.state.EVPNRoutes[i].Neighbor < c.state.EVPNRoutes[j].Neighbor
 	})
 	c.state.Unlock()
+}
+
+func findBGPRIB(obj interface{}) map[string]interface{} {
+	if m, ok := obj.(map[string]interface{}); ok {
+		if _, hasAfi := m["afi-safi"]; hasAfi {
+			return m
+		}
+		for _, v := range m {
+			if res := findBGPRIB(v); res != nil {
+				return res
+			}
+		}
+	} else if arr, ok := obj.([]interface{}); ok {
+		for _, item := range arr {
+			if res := findBGPRIB(item); res != nil {
+				return res
+			}
+		}
+	}
+	return nil
 }
 
 func cleanPathString(path *pb.Path) string {
@@ -1622,3 +1951,166 @@ func (c *NDKClient) Stop() {
 		c.cancelCtx()
 	}
 }
+
+func (c *NDKClient) SetBGPNeighborMaintenanceMode(ctx context.Context, peerIP string, enable bool, groupName string) error {
+	if groupName == "" {
+		groupName = fmt.Sprintf("maint-bgp-%s", strings.ReplaceAll(peerIP, ".", "-"))
+	}
+
+	c.mu.Lock()
+	client := c.gnmiClient
+	c.mu.Unlock()
+
+	if client == nil {
+		// In demo / simulator mode without gNMI connection, toggle local state directly
+		c.state.ToggleNeighborMaintenance(peerIP, enable, groupName)
+		return nil
+	}
+
+	user := os.Getenv("SRL_USERNAME")
+	if user == "" {
+		user = "admin"
+	}
+	pass := os.Getenv("SRL_PASSWORD")
+	if pass == "" {
+		pass = "NokiaSrl1!"
+	}
+	md := metadata.Pairs("username", user, "password", pass)
+	setCtx, cancel := context.WithTimeout(metadata.NewOutgoingContext(ctx, md), 5*time.Second)
+	defer cancel()
+
+	var setUpdates []*pb.Update
+
+	if enable {
+		// 1. Drain Routing Policy with AS-Path prepending
+		policyPayload := map[string]interface{}{
+			"name": "drain-with-as-path-prepend",
+			"default-action": map[string]interface{}{
+				"policy-result": "accept",
+				"bgp": map[string]interface{}{
+					"as-path": map[string]interface{}{
+						"prepend": map[string]interface{}{
+							"as-number": "auto",
+							"repeat-n":  3,
+						},
+					},
+				},
+			},
+		}
+		policyBytes, errPol := json.Marshal(policyPayload)
+		if errPol == nil {
+			setUpdates = append(setUpdates, &pb.Update{
+				Path: &pb.Path{
+					Elem: []*pb.PathElem{
+						{Name: "routing-policy"},
+						{Name: "policy", Key: map[string]string{"name": "drain-with-as-path-prepend"}},
+					},
+				},
+				Val: &pb.TypedValue{
+					Value: &pb.TypedValue_JsonIetfVal{
+						JsonIetfVal: policyBytes,
+					},
+				},
+			})
+		}
+
+		// 2. Maintenance Profile referencing Drain Policy
+		profPayload := map[string]interface{}{
+			"name": "maint-profile-default",
+			"bgp": map[string]interface{}{
+				"import-policy": "drain-with-as-path-prepend",
+				"export-policy": "drain-with-as-path-prepend",
+			},
+		}
+		profBytes, errP := json.Marshal(profPayload)
+		if errP == nil {
+			setUpdates = append(setUpdates, &pb.Update{
+				Path: &pb.Path{
+					Elem: []*pb.PathElem{
+						{Name: "system"},
+						{Name: "maintenance"},
+						{Name: "profile", Key: map[string]string{"name": "maint-profile-default"}},
+					},
+				},
+				Val: &pb.TypedValue{
+					Value: &pb.TypedValue_JsonIetfVal{
+						JsonIetfVal: profBytes,
+					},
+				},
+			})
+		}
+
+		// 3. Configure Maintenance Group with Profile, Mode enable, and BGP Member
+		groupPayload := map[string]interface{}{
+			"maintenance-profile": "maint-profile-default",
+			"maintenance-mode": map[string]interface{}{
+				"admin-state": "enable",
+			},
+			"members": map[string]interface{}{
+				"bgp": map[string]interface{}{
+					"network-instance": []map[string]interface{}{
+						{
+							"name":     "default",
+							"neighbor": []string{peerIP},
+						},
+					},
+				},
+			},
+		}
+		groupBytes, errG := json.Marshal(groupPayload)
+		if errG != nil {
+			return fmt.Errorf("marshal maintenance payload failed: %w", errG)
+		}
+		setUpdates = append(setUpdates, &pb.Update{
+			Path: &pb.Path{
+				Elem: []*pb.PathElem{
+					{Name: "system"},
+					{Name: "maintenance"},
+					{Name: "group", Key: map[string]string{"name": groupName}},
+				},
+			},
+			Val: &pb.TypedValue{
+				Value: &pb.TypedValue_JsonIetfVal{
+					JsonIetfVal: groupBytes,
+				},
+			},
+		})
+	} else {
+		// Disable Maintenance Mode on Group
+		groupPayload := map[string]interface{}{
+			"maintenance-mode": map[string]interface{}{
+				"admin-state": "disable",
+			},
+		}
+		groupBytes, errG := json.Marshal(groupPayload)
+		if errG != nil {
+			return fmt.Errorf("marshal maintenance payload failed: %w", errG)
+		}
+		setUpdates = append(setUpdates, &pb.Update{
+			Path: &pb.Path{
+				Elem: []*pb.PathElem{
+					{Name: "system"},
+					{Name: "maintenance"},
+					{Name: "group", Key: map[string]string{"name": groupName}},
+				},
+			},
+			Val: &pb.TypedValue{
+				Value: &pb.TypedValue_JsonIetfVal{
+					JsonIetfVal: groupBytes,
+				},
+			},
+		})
+	}
+
+	setReq := &pb.SetRequest{
+		Update: setUpdates,
+	}
+
+	_, setErr := client.Set(setCtx, setReq)
+	if setErr != nil {
+		return fmt.Errorf("gNMI Set error for maintenance mode: %w", setErr)
+	}
+
+	return nil
+}
+

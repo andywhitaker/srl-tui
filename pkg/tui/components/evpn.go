@@ -47,7 +47,7 @@ func GetFilteredEVPNRoutes(snap *ndk.TelemetryState, activeFilter EVPNTypeFilter
 		if activeFilter == EVPNFilterType5 && r.RouteType != 5 { continue }
 
 		// Hide unimported routes by default unless showUnimported is true
-		isUnimported := r.Status == "r*" || strings.HasPrefix(r.Status, "r")
+		isUnimported := r.Status != "u*>" && r.Status != "active"
 		if !showUnimported && isUnimported {
 			continue
 		}
@@ -184,26 +184,26 @@ func RenderEVPNView(snap *ndk.TelemetryState, activeFilter EVPNTypeFilter, selec
 	}
 
 	// Format plain text headers with exact column widths:
-	// CURSOR (2) + TYPE (7) + RD (16) + RT (14) + VNI (8) + STATUS (12) + PAYLOAD (36) + NEXT-HOP (14) + NEIGHBOR (14)
+	// CURSOR (2) + TYPE (7) + RD (16) + RT (14) + VNI (15) + STATUS (12) + PAYLOAD (36) + NEXT-HOP (12) + NEIGHBOR (25)
 	hdrTxt := fmt.Sprintf("  %s %s %s %s %s %s %s %s",
 		padRight("TYPE", 7),
 		padRight("RD", 16),
 		padRight("RT", 14),
-		padRight("VNI", 8),
+		padRight("VNI", 15),
 		padRight("STATUS", 12),
 		padRight("PAYLOAD / PREFIX", 36),
-		padRight("NEXT-HOP", 14),
-		padRight("NEIGHBOR", 14),
+		padRight("NEXT-HOP", 12),
+		padRight("NEIGHBOR", 25),
 	)
 	sepTxt := fmt.Sprintf("  %s %s %s %s %s %s %s %s",
 		padRight("───────", 7),
 		padRight("────────────────", 16),
 		padRight("──────────────", 14),
-		padRight("────────", 8),
+		padRight("───────────────", 15),
 		padRight("────────────", 12),
 		padRight("────────────────────────────────────", 36),
-		padRight("──────────────", 14),
-		padRight("──────────────", 14),
+		padRight("────────────", 12),
+		padRight("─────────────────────────", 25),
 	)
 
 	var evpnRows []string
@@ -266,18 +266,34 @@ func RenderEVPNView(snap *ndk.TelemetryState, activeFilter EVPNTypeFilter, selec
 				statusColor = pal.Warning
 			}
 
+			// Format comma-separated list of all BGP path version neighbor addresses
+			var nbrList []string
+			if len(r.PathVersions) > 0 {
+				seen := make(map[string]bool)
+				for _, pv := range r.PathVersions {
+					if pv.Neighbor != "" && !seen[pv.Neighbor] {
+						seen[pv.Neighbor] = true
+						nbrList = append(nbrList, pv.Neighbor)
+					}
+				}
+			}
+			nbrStr := strings.Join(nbrList, ", ")
+			if nbrStr == "" {
+				nbrStr = r.Neighbor
+			}
+
 			sType := padRight(typeBadge, 7)
 			sRD := padRight(r.RD, 16)
 			sRT := padRight(rtStr, 14)
-			sVNI := padRight(vniStr, 8)
+			sVNI := padRight(vniStr, 15)
 			sStatus := padRight(statusText, 12)
 			sPayload := padRight(payload, 36)
-			sNextHop := padRight(r.NextHop, 14)
-			sNbr := padRight(r.Neighbor, 14)
+			sNextHop := padRight(r.NextHop, 12)
+			sNbr := padRight(nbrStr, 25)
 
 			rowWidth := width - 6
-			if rowWidth < 135 {
-				rowWidth = 135
+			if rowWidth < 147 {
+				rowWidth = 147
 			}
 
 			var row string
@@ -387,6 +403,11 @@ func RenderEVPNDetailModal(entry ndk.EVPNRouteEntry, pal theme.Palette, width, h
 			fmt.Sprintf("%s %s", labelStyle.Render("MAC Address:  "), valStyle.Render(entry.MAC)),
 			fmt.Sprintf("%s %s", labelStyle.Render("IP Address:   "), valStyle.Render(entry.IP)),
 		)
+	} else if entry.RouteType == 3 {
+		lines = append(lines,
+			fmt.Sprintf("%s %s", labelStyle.Render("Tunnel Type:  "), valStyle.Render("Inclusive Multicast BUM Tunnel")),
+			fmt.Sprintf("%s %s", labelStyle.Render("Originator IP:"), valStyle.Render(entry.NextHop)),
+		)
 	} else if entry.RouteType == 5 {
 		lines = append(lines,
 			fmt.Sprintf("%s %s", labelStyle.Render("IP Prefix:    "), valStyle.Render(entry.Prefix)),
@@ -397,10 +418,25 @@ func RenderEVPNDetailModal(entry ndk.EVPNRouteEntry, pal theme.Palette, width, h
 		lines = append(lines, fmt.Sprintf("%s %s", labelStyle.Render("ESI Value:    "), valStyle.Render(entry.ESI)))
 	}
 
+	nbrStr := entry.Neighbor
+	if len(entry.PathVersions) > 0 {
+		var nbrs []string
+		seen := make(map[string]bool)
+		for _, pv := range entry.PathVersions {
+			if pv.Neighbor != "" && !seen[pv.Neighbor] {
+				seen[pv.Neighbor] = true
+				nbrs = append(nbrs, pv.Neighbor)
+			}
+		}
+		if len(nbrs) > 0 {
+			nbrStr = strings.Join(nbrs, ", ")
+		}
+	}
+
 	lines = append(lines,
 		strings.Repeat("─", modalWidth-4),
 		fmt.Sprintf("%s %s", labelStyle.Render("Primary NextHop:"), valStyle.Render(entry.NextHop)),
-		fmt.Sprintf("%s %s", labelStyle.Render("BGP Peer (Nbr): "), valStyle.Render(entry.Neighbor)),
+		fmt.Sprintf("%s %s", labelStyle.Render("BGP Peer (Nbr): "), valStyle.Render(nbrStr)),
 		fmt.Sprintf("%s %s", labelStyle.Render("Originating VRF:"), valStyle.Render(entry.Originator)),
 		fmt.Sprintf("%s %s", labelStyle.Render("FIB Status:     "), valStyle.Render(entry.Status)),
 		fmt.Sprintf("%s %s", labelStyle.Render("Reason Unimport:"), lipgloss.NewStyle().Foreground(pal.Warning).Render(unimportedReason)),
@@ -412,9 +448,16 @@ func RenderEVPNDetailModal(entry ndk.EVPNRouteEntry, pal theme.Palette, width, h
 			lipgloss.NewStyle().Bold(true).Foreground(pal.Primary).Render("BGP MULTI-PATH BGP RIB VERSIONS:"),
 		)
 		for _, pv := range entry.PathVersions {
-			pStatus := lipgloss.NewStyle().Foreground(pal.Success).Render("u*> (Best Path)")
-			if pv.StatusCode != "u*>" {
-				pStatus = lipgloss.NewStyle().Foreground(pal.Subtext).Render("r*  (RIB Only / Alternate)")
+			var pStatus string
+			switch {
+			case pv.StatusCode == "u*>":
+				pStatus = lipgloss.NewStyle().Foreground(pal.Success).Render("u*> (Best Path)")
+			case pv.StatusCode == "*" || pv.StatusCode == "u*":
+				pStatus = lipgloss.NewStyle().Foreground(pal.Secondary).Render("*   (Valid ECMP Path)")
+			case strings.HasPrefix(pv.StatusCode, "r"):
+				pStatus = lipgloss.NewStyle().Foreground(pal.Warning).Render("r*  (RIB Only / Unimported)")
+			default:
+				pStatus = lipgloss.NewStyle().Foreground(pal.Subtext).Render(fmt.Sprintf("%-3s (Valid Alternate)", pv.StatusCode))
 			}
 			lines = append(lines, fmt.Sprintf("  • Peer: %s  NextHop: %s  Status: %s",
 				valStyle.Render(padRight(pv.Neighbor, 14)),

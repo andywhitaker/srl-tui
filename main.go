@@ -44,18 +44,19 @@ func main() {
 		initialTheme = theme.SolarizedDark
 	}
 
+	var ndkClient *ndk.NDKClient
 	if *demoFlag {
 		// Run Demo Simulation mode explicitly requested by user
 		sim := ndk.NewSimulator(state)
 		go sim.Start()
 	} else {
 		// Native NDK gRPC Event Subscription & Pure Go HTTP JSON-RPC Datastore Mode (No sr_cli subprocesses!)
-		ndkClient := ndk.NewNDKClient(*socketFlag, state)
+		ndkClient = ndk.NewNDKClient(*socketFlag, state)
 		_ = ndkClient.Start(ctx)
 		defer ndkClient.Stop()
 	}
 
-	model := tui.NewModel(ctx, state, initialTheme)
+	model := tui.NewModelWithClient(ctx, state, initialTheme, ndkClient)
 	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
 
 	if _, err := p.Run(); err != nil {

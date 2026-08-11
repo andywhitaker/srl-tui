@@ -2,6 +2,8 @@ package tui
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -29,27 +31,38 @@ type LLDPDetailModal struct {
 	Entry  ndk.LLDPNeighbor
 }
 
+type BGPDetailModal struct {
+	Active        bool
+	Entry         ndk.BGPPeerState
+	ConfirmPrompt bool
+	ConfirmAction string
+	ConfirmGroup  string
+}
+
 type Model struct {
-	ctx              context.Context
-	state            *TelemetryStateWrapper
-	theme            theme.Palette
-	activeTab        components.TabID
-	selectedPort     int
-	evpnFilter       components.EVPNTypeFilter
-	evpnSelIdx       int
+	ctx                context.Context
+	state              *TelemetryStateWrapper
+	ndkClient          *ndk.NDKClient
+	theme              theme.Palette
+	activeTab          components.TabID
+	selectedPort       int
+	bgpSelIdx          int
+	evpnFilter         components.EVPNTypeFilter
+	evpnSelIdx         int
 	showUnimportedEVPN bool
-	arpMacView       *components.ARPMACView
-	lldpView         *components.LLDPView
-	routeView        *components.RouteView
-	showHelp         bool
-	inspector        components.InspectorModal
-	evpnModal        EVPNDetailModal
-	routeModal       RouteDetailModal
-	lldpModal        LLDPDetailModal
-	pageSearchInput  textinput.Model
-	pageSearchActive bool
-	width            int
-	height           int
+	arpMacView         *components.ARPMACView
+	lldpView           *components.LLDPView
+	routeView          *components.RouteView
+	showHelp           bool
+	inspector          components.InspectorModal
+	bgpModal           BGPDetailModal
+	evpnModal          EVPNDetailModal
+	routeModal         RouteDetailModal
+	lldpModal          LLDPDetailModal
+	pageSearchInput    textinput.Model
+	pageSearchActive   bool
+	width              int
+	height             int
 }
 
 type TelemetryStateWrapper struct {
@@ -57,6 +70,10 @@ type TelemetryStateWrapper struct {
 }
 
 func NewModel(ctx context.Context, state *ndk.TelemetryState, initialTheme theme.Palette) Model {
+	return NewModelWithClient(ctx, state, initialTheme, nil)
+}
+
+func NewModelWithClient(ctx context.Context, state *ndk.TelemetryState, initialTheme theme.Palette, client *ndk.NDKClient) Model {
 	ti := textinput.New()
 	ti.Placeholder = "Search query..."
 	ti.CharLimit = 40
@@ -65,9 +82,11 @@ func NewModel(ctx context.Context, state *ndk.TelemetryState, initialTheme theme
 	return Model{
 		ctx:              ctx,
 		state:            &TelemetryStateWrapper{state: state},
+		ndkClient:        client,
 		theme:            initialTheme,
 		activeTab:        components.TabPorts,
 		selectedPort:     0,
+		bgpSelIdx:        0,
 		evpnFilter:       components.EVPNFilterAll,
 		evpnSelIdx:       0,
 		arpMacView:       components.NewARPMACView(),
@@ -75,6 +94,7 @@ func NewModel(ctx context.Context, state *ndk.TelemetryState, initialTheme theme
 		routeView:        components.NewRouteView(),
 		showHelp:         false,
 		inspector:        components.NewInspectorModal(),
+		bgpModal:         BGPDetailModal{Active: false},
 		evpnModal:        EVPNDetailModal{Active: false},
 		routeModal:       RouteDetailModal{Active: false},
 		lldpModal:        LLDPDetailModal{Active: false},
@@ -83,6 +103,10 @@ func NewModel(ctx context.Context, state *ndk.TelemetryState, initialTheme theme
 		width:            120,
 		height:           32,
 	}
+}
+
+func (m *Model) SetNDKClient(client *ndk.NDKClient) {
+	m.ndkClient = client
 }
 
 func (m Model) Init() tea.Cmd {
@@ -129,6 +153,78 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, cmd
 			}
+		}
+
+		if m.bgpModal.Active {
+			switch msg.String() {
+			case "esc":
+				if m.bgpModal.ConfirmPrompt {
+					m.bgpModal.ConfirmPrompt = false
+				} else {
+					m.bgpModal.Active = false
+				}
+				return m, nil
+			case "q":
+				if !m.bgpModal.ConfirmPrompt {
+					m.bgpModal.Active = false
+					return m, nil
+				}
+			case "m", "M":
+				if !m.bgpModal.ConfirmPrompt {
+					m.bgpModal.ConfirmPrompt = true
+					if m.bgpModal.Entry.InMaintenance {
+						m.bgpModal.ConfirmAction = "disable"
+					} else {
+						m.bgpModal.ConfirmAction = "enable"
+					}
+					if m.bgpModal.Entry.MaintenanceGroup != "" {
+						m.bgpModal.ConfirmGroup = m.bgpModal.Entry.MaintenanceGroup
+					} else {
+						m.bgpModal.ConfirmGroup = fmt.Sprintf("maint-bgp-%s", strings.ReplaceAll(m.bgpModal.Entry.NeighborIP, ".", "-"))
+					}
+				}
+				return m, nil
+			case "y", "Y":
+				if m.bgpModal.ConfirmPrompt {
+					enable := (m.bgpModal.ConfirmAction == "enable")
+					peerIP := m.bgpModal.Entry.NeighborIP
+					grpName := m.bgpModal.ConfirmGroup
+
+					if m.ndkClient != nil {
+						go m.ndkClient.SetBGPNeighborMaintenanceMode(m.ctx, peerIP, enable, grpName)
+					}
+					m.state.state.ToggleNeighborMaintenance(peerIP, enable, grpName)
+
+					m.bgpModal.ConfirmPrompt = false
+					m.bgpModal.Entry.InMaintenance = enable
+					m.bgpModal.Entry.MaintenanceGroup = grpName
+				}
+				return m, nil
+			case "enter":
+				if m.bgpModal.ConfirmPrompt {
+					enable := (m.bgpModal.ConfirmAction == "enable")
+					peerIP := m.bgpModal.Entry.NeighborIP
+					grpName := m.bgpModal.ConfirmGroup
+
+					if m.ndkClient != nil {
+						go m.ndkClient.SetBGPNeighborMaintenanceMode(m.ctx, peerIP, enable, grpName)
+					}
+					m.state.state.ToggleNeighborMaintenance(peerIP, enable, grpName)
+
+					m.bgpModal.ConfirmPrompt = false
+					m.bgpModal.Entry.InMaintenance = enable
+					m.bgpModal.Entry.MaintenanceGroup = grpName
+				} else {
+					m.bgpModal.Active = false
+				}
+				return m, nil
+			case "n", "N":
+				if m.bgpModal.ConfirmPrompt {
+					m.bgpModal.ConfirmPrompt = false
+				}
+				return m, nil
+			}
+			return m, nil
 		}
 
 		if m.evpnModal.Active {
@@ -235,6 +331,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			snap := m.state.state.Snapshot()
 			if m.activeTab == components.TabPorts && m.selectedPort >= 0 && m.selectedPort < len(snap.Ports) {
 				m.inspector.OpenForPort(snap.Ports[m.selectedPort])
+			} else if m.activeTab == components.TabTopology {
+				bgpPeers := components.GetFilteredBGP(snap, m.pageSearchInput.Value())
+				if m.bgpSelIdx >= 0 && m.bgpSelIdx < len(bgpPeers) {
+					m.bgpModal = BGPDetailModal{
+						Active: true,
+						Entry:  bgpPeers[m.bgpSelIdx],
+					}
+				}
 			} else if m.activeTab == components.TabLLDP {
 				neighbors := components.GetFilteredLLDP(snap, m.pageSearchInput.Value())
 				if m.lldpView.SelectedIdx >= 0 && m.lldpView.SelectedIdx < len(neighbors) {
@@ -301,6 +405,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.selectedPort%2 == 0 && m.selectedPort+1 < len(m.state.state.Ports) {
 					m.selectedPort += 1
 				}
+			} else if m.activeTab == components.TabTopology {
+				snap := m.state.state.Snapshot()
+				bgpPeers := components.GetFilteredBGP(snap, m.pageSearchInput.Value())
+				if m.bgpSelIdx < len(bgpPeers)-1 {
+					m.bgpSelIdx++
+				}
 			} else if m.activeTab == components.TabArpMac {
 				m.arpMacView.ScrollDown()
 			} else if m.activeTab == components.TabLLDP {
@@ -324,6 +434,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.activeTab == components.TabPorts {
 				if m.selectedPort%2 == 1 {
 					m.selectedPort -= 1
+				}
+			} else if m.activeTab == components.TabTopology {
+				if m.bgpSelIdx > 0 {
+					m.bgpSelIdx--
 				}
 			} else if m.activeTab == components.TabArpMac {
 				m.arpMacView.ScrollUp()
@@ -421,7 +535,7 @@ func (m Model) View() string {
 		mainView = components.RenderPortMatrix(snap, m.selectedPort, true, m.theme, m.width, workspaceHeight)
 
 	case components.TabTopology:
-		mainView = components.RenderTopoMesh(snap, true, m.theme, m.width, workspaceHeight, searchQuery, m.pageSearchActive, m.pageSearchInput.View())
+		mainView = components.RenderTopoMesh(snap, true, m.theme, m.width, workspaceHeight, searchQuery, m.pageSearchActive, m.pageSearchInput.View(), m.bgpSelIdx)
 
 	case components.TabArpMac:
 		mainView = m.arpMacView.Render(snap, m.width, workspaceHeight, m.theme, searchQuery, m.pageSearchActive, m.pageSearchInput.View())
@@ -448,6 +562,11 @@ func (m Model) View() string {
 	)
 
 	// Render Modals Overlays
+	if m.bgpModal.Active {
+		modal := components.RenderBGPDetailModal(m.bgpModal.Entry, m.theme, m.width, m.height, snap, m.bgpModal.ConfirmPrompt, m.bgpModal.ConfirmAction, m.bgpModal.ConfirmGroup)
+		return overlayModal(fullView, modal, m.width, m.height)
+	}
+
 	if m.lldpModal.Active {
 		modal := components.RenderLLDPDetailModal(m.lldpModal.Entry, snap, m.theme, m.width, m.height)
 		return overlayModal(fullView, modal, m.width, m.height)
@@ -477,6 +596,7 @@ func (m Model) View() string {
 }
 
 func (m *Model) resetViewSelections() {
+	m.bgpSelIdx = 0
 	m.evpnSelIdx = 0
 	if m.routeView != nil {
 		m.routeView.SelectedIdx = 0

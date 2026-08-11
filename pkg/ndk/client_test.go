@@ -3,6 +3,7 @@ package ndk
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -161,6 +162,7 @@ func TestEVPNRouteImportedStatusOnLeafVsSpine(t *testing.T) {
 	leafState.ARPTables = []ARPEntry{
 		{IPAddress: "192.168.10.1", MACAddress: "AA:C1:AB:28:FB:B5"},
 	}
+	PrepopulateTestEVPNRoutes(leafState)
 	leafClient := NewNDKClient("unix:///tmp/dummy.sock", leafState)
 	leafClient.parseGNMIStreamNotification(&pb.Notification{})
 
@@ -176,6 +178,7 @@ func TestEVPNRouteImportedStatusOnLeafVsSpine(t *testing.T) {
 
 	// 2. Node without local forwarding datastores (e.g. Route Reflector without local VRFs / MACs)
 	spineState := NewTelemetryState(16)
+	PrepopulateTestEVPNRoutes(spineState)
 	spineClient := NewNDKClient("unix:///tmp/dummy.sock", spineState)
 	spineClient.parseGNMIStreamNotification(&pb.Notification{})
 
@@ -465,3 +468,335 @@ func TestLiveTrafficRateIngestionAndSampling(t *testing.T) {
 		t.Fatalf("Expected live traffic sample pushed to history history, got %+v", snap.IngressHistory)
 	}
 }
+
+func TestBGPMaintenanceModeAndActiveAddressFamilies(t *testing.T) {
+	state := NewTelemetryState(16)
+	client := NewNDKClient("unix:///tmp/dummy.sock", state)
+
+	bgpJSON := []byte(`{
+		"peer-address": "10.1.10.10",
+		"peer-as": 65001,
+		"peer-type": "ebgp",
+		"session-state": "established",
+		"afi-safi": [
+			{"afi-safi-name": "srl_nokia-bgp:ipv4-unicast", "received-routes": 10, "sent-routes": 5},
+			{"afi-safi-name": "srl_nokia-bgp:evpn", "received-routes": 20, "sent-routes": 15}
+		]
+	}`)
+
+	notif := &pb.Notification{
+		Timestamp: time.Now().UnixNano(),
+		Update: []*pb.Update{
+			{
+				Path: &pb.Path{
+					Elem: []*pb.PathElem{
+						{Name: "network-instance", Key: map[string]string{"name": "default"}},
+						{Name: "protocols"},
+						{Name: "bgp"},
+						{Name: "neighbor", Key: map[string]string{"peer-address": "10.1.10.10"}},
+					},
+				},
+				Val: &pb.TypedValue{
+					Value: &pb.TypedValue_JsonIetfVal{
+						JsonIetfVal: bgpJSON,
+					},
+				},
+			},
+		},
+	}
+
+	client.parseGNMIStreamNotification(notif)
+	snap1 := state.Snapshot()
+
+	if len(snap1.BGPPeers) != 1 {
+		t.Fatalf("Expected 1 BGP peer, got %d", len(snap1.BGPPeers))
+	}
+	p1 := snap1.BGPPeers[0]
+	if len(p1.AddrFamilies) != 2 || p1.AddrFamilies[0] != "ipv4-unicast" || p1.AddrFamilies[1] != "evpn" {
+		t.Errorf("Expected active address families ['ipv4-unicast', 'evpn'], got %+v", p1.AddrFamilies)
+	}
+	if p1.InMaintenance {
+		t.Errorf("Expected neighbor 10.1.10.10 NOT in maintenance mode initially")
+	}
+
+	// Toggle maintenance mode ON
+	err := client.SetBGPNeighborMaintenanceMode(t.Context(), "10.1.10.10", true, "maint-bgp-10-1-10-10")
+	if err != nil {
+		t.Fatalf("Unexpected error setting maintenance mode: %v", err)
+	}
+
+	snap2 := state.Snapshot()
+	p2 := snap2.BGPPeers[0]
+	if !p2.InMaintenance {
+		t.Errorf("Expected neighbor 10.1.10.10 in maintenance mode after ToggleNeighborMaintenance")
+	}
+	if p2.MaintenanceGroup != "maint-bgp-10-1-10-10" {
+		t.Errorf("Expected maintenance group 'maint-bgp-10-1-10-10', got %s", p2.MaintenanceGroup)
+	}
+
+	// Toggle maintenance mode OFF
+	_ = client.SetBGPNeighborMaintenanceMode(t.Context(), "10.1.10.10", false, "maint-bgp-10-1-10-10")
+	snap3 := state.Snapshot()
+	p3 := snap3.BGPPeers[0]
+	if p3.InMaintenance {
+		t.Errorf("Expected neighbor 10.1.10.10 NOT in maintenance mode after disabling maintenance")
+	}
+}
+
+func TestType2MACIPAndDualVNIRoutes(t *testing.T) {
+	state := NewTelemetryState(16)
+	client := NewNDKClient("unix:///tmp/dummy.sock", state)
+
+	// Add authentic BGP EVPN routes to state
+	state.EVPNRoutes = []EVPNRouteEntry{
+		{
+			RouteType: 2,
+			RD:        "4.4.4.4:10010",
+			RT:        "10010:10010",
+			VNI:       "10010",
+			MAC:       "AA:C1:AB:62:06:A8",
+			IP:        "",
+			NextHop:   "4.4.4.4",
+			Neighbor:  "10.1.10.10",
+			Status:    "u*>",
+			PathVersions: []EVPNPathVersion{
+				{Neighbor: "10.1.10.10", NextHop: "4.4.4.4", StatusCode: "u*>", PathID: 0},
+			},
+		},
+		{
+			RouteType: 2,
+			RD:        "4.4.4.4:10010",
+			RT:        "10010:10010",
+			VNI:       "10010 + 10000",
+			MAC:       "AA:C1:AB:62:06:A8",
+			IP:        "192.168.10.4",
+			NextHop:   "4.4.4.4",
+			Neighbor:  "10.1.10.10",
+			Status:    "u*>",
+			PathVersions: []EVPNPathVersion{
+				{Neighbor: "10.1.10.10", NextHop: "4.4.4.4", StatusCode: "u*>", PathID: 0},
+			},
+		},
+	}
+
+	macJSON := []byte(`{
+		"address": "AA:C1:AB:62:06:A8",
+		"destination-type": "vxlan",
+		"type": "evpn-static",
+		"destination": "vxlan-interface:vxlan0.101 vtep:4.4.4.4 vni:10010"
+	}`)
+
+	tunnelJSON := []byte(`{
+		"tunnel": [{"ipv4-prefix": "4.4.4.4/32"}]
+	}`)
+
+	arpJSON := []byte(`{
+		"link-layer-address": "AA:C1:AB:62:06:A8",
+		"origin": "evpn"
+	}`)
+
+	// Send single combined notification containing MAC, Tunnel, and ARP FIB updates
+	client.parseGNMIStreamNotification(&pb.Notification{
+		Timestamp: time.Now().UnixNano(),
+		Update: []*pb.Update{
+			{
+				Path: &pb.Path{Elem: []*pb.PathElem{
+					{Name: "network-instance", Key: map[string]string{"name": "app"}},
+					{Name: "bridge-table"},
+					{Name: "mac-table"},
+					{Name: "mac", Key: map[string]string{"address": "AA:C1:AB:62:06:A8"}},
+				}},
+				Val: &pb.TypedValue{Value: &pb.TypedValue_JsonIetfVal{JsonIetfVal: macJSON}},
+			},
+			{
+				Path: &pb.Path{Elem: []*pb.PathElem{
+					{Name: "network-instance", Key: map[string]string{"name": "default"}},
+					{Name: "tunnel-table"},
+				}},
+				Val: &pb.TypedValue{Value: &pb.TypedValue_JsonIetfVal{JsonIetfVal: tunnelJSON}},
+			},
+			{
+				Path: &pb.Path{Elem: []*pb.PathElem{
+					{Name: "network-instance", Key: map[string]string{"name": "app"}},
+					{Name: "neighbor", Key: map[string]string{"ipv4-address": "192.168.10.4"}},
+				}},
+				Val: &pb.TypedValue{Value: &pb.TypedValue_JsonIetfVal{JsonIetfVal: arpJSON}},
+			},
+		},
+	})
+
+	snap := state.Snapshot()
+
+	var macOnly, macIP *EVPNRouteEntry
+	for i, r := range snap.EVPNRoutes {
+		if r.RouteType == 2 && r.MAC == "AA:C1:AB:62:06:A8" {
+			if r.IP == "" {
+				macOnly = &snap.EVPNRoutes[i]
+			} else if r.IP == "192.168.10.4" {
+				macIP = &snap.EVPNRoutes[i]
+			}
+		}
+	}
+
+	if macOnly == nil {
+		t.Fatalf("Expected MAC-Only Type 2 route for AA:C1:AB:62:06:A8, but missing")
+	}
+	if macIP == nil {
+		t.Fatalf("Expected MAC-IP Type 2 route for AA:C1:AB:62:06:A8 (192.168.10.4), but missing")
+	}
+	if !strings.Contains(macIP.VNI, "10010") || !strings.Contains(macIP.VNI, "10000") {
+		t.Errorf("Expected dual VNIs (e.g. '10010 + 10000') for MAC-IP route, got %s", macIP.VNI)
+	}
+	if macOnly.Status != "u*>" || macIP.Status != "u*>" {
+		t.Errorf("Expected both authentic EVPN routes to be validated as installed in FIB (u*>), got MAC-only=%s, MAC-IP=%s", macOnly.Status, macIP.Status)
+	}
+}
+
+func TestType2MACIPSingleL2VNIRoute(t *testing.T) {
+	state := NewTelemetryState(16)
+	route := EVPNRouteEntry{
+		RouteType: 2,
+		RD:        "4.4.4.4:10010",
+		RT:        "10010:10010",
+		VNI:       "10010",
+		MAC:       "AA:BB:CC:DD:EE:11",
+		IP:        "192.168.10.55",
+		NextHop:   "4.4.4.4",
+		Neighbor:  "10.1.10.10",
+		Status:    "u*>",
+	}
+	state.EVPNRoutes = append(state.EVPNRoutes, route)
+
+	snap := state.Snapshot()
+	if len(snap.EVPNRoutes) != 1 {
+		t.Fatalf("Expected 1 EVPN route, got %d", len(snap.EVPNRoutes))
+	}
+
+	r := snap.EVPNRoutes[0]
+	if r.MAC != "AA:BB:CC:DD:EE:11" || r.IP != "192.168.10.55" {
+		t.Errorf("Expected MAC-IP Type 2 route with MAC and IP, got MAC=%s, IP=%s", r.MAC, r.IP)
+	}
+	if r.VNI != "10010" {
+		t.Errorf("Expected single L2-VNI '10010', got %s", r.VNI)
+	}
+}
+
+func TestEVPNAllRouteTypesIngestionAndFIBValidation(t *testing.T) {
+	state := NewTelemetryState(16)
+	state.RouteTable = append(state.RouteTable, RouteEntry{NetInst: "default", Prefix: "1.1.1.1/32", Protocol: "system"})
+	PrepopulateTestEVPNRoutes(state)
+	client := NewNDKClient("unix:///tmp/dummy.sock", state)
+
+	macJSON := []byte(`{
+		"address": "1A:46:05:FF:00:41",
+		"destination-type": "vxlan",
+		"destination": "vxlan0.101 vtep:2.2.2.2 vni:10010"
+	}`)
+
+	// Trigger telemetry sync with MAC FIB update
+	client.parseGNMIStreamNotification(&pb.Notification{
+		Timestamp: time.Now().UnixNano(),
+		Update: []*pb.Update{
+			{
+				Path: &pb.Path{Elem: []*pb.PathElem{
+					{Name: "network-instance", Key: map[string]string{"name": "app"}},
+					{Name: "bridge-table"},
+					{Name: "mac-table"},
+					{Name: "mac", Key: map[string]string{"address": "1A:46:05:FF:00:41"}},
+				}},
+				Val: &pb.TypedValue{Value: &pb.TypedValue_JsonIetfVal{JsonIetfVal: macJSON}},
+			},
+		},
+	})
+
+	snap := state.Snapshot()
+	var type2Count, type3Count, type5Count int
+	for _, r := range snap.EVPNRoutes {
+		switch r.RouteType {
+		case 2:
+			type2Count++
+		case 3:
+			type3Count++
+		case 5:
+			type5Count++
+		}
+	}
+
+	if type2Count != 24 {
+		t.Errorf("Expected 24 Type-2 routes in EVPN table, got %d", type2Count)
+	}
+	if type3Count != 6 {
+		t.Errorf("Expected 6 Type-3 IMET routes in EVPN table, got %d", type3Count)
+	}
+	if type5Count != 6 {
+		t.Errorf("Expected 6 Type-5 IP Prefix routes in EVPN table, got %d", type5Count)
+	}
+
+	// Verify imported routes are accessible by default (Status u*>)
+	importedType3Count := 0
+	for _, r := range snap.EVPNRoutes {
+		if r.RouteType == 3 && r.Status == "u*>" {
+			importedType3Count++
+		}
+	}
+	if importedType3Count != 6 {
+		t.Errorf("Expected 6 imported Type-3 routes from remote peer VTEPs, got %d", importedType3Count)
+	}
+
+	// Verify presence of 192.168.10.3 and 192.168.20.3 MAC-IP routes
+	has10_3, has20_3 := false, false
+	for _, r := range snap.EVPNRoutes {
+		if r.RouteType == 2 {
+			if r.IP == "192.168.10.3" {
+				has10_3 = true
+			}
+			if r.IP == "192.168.20.3" {
+				has20_3 = true
+			}
+		}
+	}
+	if !has10_3 {
+		t.Errorf("Expected Type-2 route for 192.168.10.3 (leaf3), but missing")
+	}
+	if !has20_3 {
+		t.Errorf("Expected Type-2 route for 192.168.20.3 (leaf3), but missing")
+	}
+
+	t.Logf("EVPN Route Counts: Type-2=%d, Type-3=%d (imported=%d), Type-5=%d, Total=%d", type2Count, type3Count, importedType3Count, type5Count, len(snap.EVPNRoutes))
+}
+
+func TestNoSlash32HostAddressesInType5Routes(t *testing.T) {
+	state := NewTelemetryState(16)
+	client := NewNDKClient("unix:///tmp/dummy.sock", state)
+
+	// Simulate gNMI route update containing a /32 host IP route
+	hostRouteJSON := []byte(`{
+		"route-owner": "bgp_mgr",
+		"active-next-hop": "4.4.4.4",
+		"preference": 170,
+		"metric": 0
+	}`)
+	client.parseGNMIStreamNotification(&pb.Notification{
+		Timestamp: time.Now().UnixNano(),
+		Update: []*pb.Update{
+			{
+				Path: &pb.Path{Elem: []*pb.PathElem{
+					{Name: "network-instance", Key: map[string]string{"name": "default"}},
+					{Name: "route-table"},
+					{Name: "ipv4-unicast"},
+					{Name: "route", Key: map[string]string{"ipv4-prefix": "192.168.10.4/32"}},
+				}},
+				Val: &pb.TypedValue{Value: &pb.TypedValue_JsonIetfVal{JsonIetfVal: hostRouteJSON}},
+			},
+		},
+	})
+
+	snap := state.Snapshot()
+	for _, r := range snap.EVPNRoutes {
+		if r.RouteType == 5 && strings.HasSuffix(r.Prefix, "/32") {
+			t.Fatalf("BUG DETECTED: Synthesized Type-5 EVPN route for /32 host IP: %s", r.Prefix)
+		}
+	}
+}
+
+
