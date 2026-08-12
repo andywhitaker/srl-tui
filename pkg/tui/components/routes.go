@@ -46,6 +46,14 @@ func GetFilteredRoutes(snap *ndk.TelemetryState, searchQuery string) []ndk.Route
 				strings.Contains(fmt.Sprintf("%d", r.Preference), qLower) ||
 				strings.Contains(fmt.Sprintf("%d", r.Metric), qLower)
 			if !match {
+				for _, nh := range r.NextHops {
+					if strings.Contains(strings.ToLower(nh), qLower) {
+						match = true
+						break
+					}
+				}
+			}
+			if !match {
 				continue
 			}
 		}
@@ -74,7 +82,7 @@ func (v *RouteView) Render(snap *ndk.TelemetryState, pal theme.Palette, width, h
 
 	for _, r := range filteredRoutes {
 		switch strings.ToLower(r.Protocol) {
-		case "bgp":
+		case "bgp", "bgp_evpn", "evpn":
 			bgpCount++
 		case "direct", "local", "connected":
 			directCount++
@@ -145,7 +153,7 @@ func (v *RouteView) Render(snap *ndk.TelemetryState, pal theme.Palette, width, h
 			pName := strings.ToUpper(entry.Protocol)
 			pColor := pal.Success
 			switch strings.ToLower(entry.Protocol) {
-			case "bgp":
+			case "bgp", "bgp_evpn", "evpn":
 				pColor = pal.Secondary
 			case "direct", "local", "connected":
 				pColor = pal.Success
@@ -254,7 +262,7 @@ func RenderRouteDetailModal(r ndk.RouteEntry, snap *ndk.TelemetryState, pal them
 
 	pColor := pal.Success
 	switch strings.ToLower(r.Protocol) {
-	case "bgp":
+	case "bgp", "bgp_evpn", "evpn":
 		pColor = pal.Secondary
 	case "direct", "local", "connected":
 		pColor = pal.Success

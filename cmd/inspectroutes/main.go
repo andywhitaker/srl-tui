@@ -61,8 +61,7 @@ func main() {
 
 	getResp, err := client.Get(ctx, &pb.GetRequest{
 		Path: []*pb.Path{
-			{Elem: []*pb.PathElem{{Name: "network-instance", Key: map[string]string{"name": "default"}}, {Name: "route-table"}, {Name: "ipv4-unicast"}, {Name: "route"}}},
-			{Elem: []*pb.PathElem{{Name: "network-instance", Key: map[string]string{"name": "default"}}, {Name: "protocols"}, {Name: "bgp"}}},
+			{Elem: []*pb.PathElem{{Name: "network-instance", Key: map[string]string{"name": "*"}}, {Name: "route-table"}}},
 		},
 		Encoding: pb.Encoding_JSON_IETF,
 	})
@@ -72,21 +71,25 @@ func main() {
 		return
 	}
 
-	fmt.Println("=== INSPECTING ROUTE TABLE & BGP PROTOCOL DATA ===")
+	fmt.Println("=== INSPECTING ALL ROUTE TABLES ===")
 	for _, n := range getResp.GetNotification() {
+		pathStr := ""
+		for _, elem := range n.GetPrefix().GetElem() {
+			pathStr += "/" + elem.GetName()
+			if len(elem.GetKey()) > 0 {
+				pathStr += fmt.Sprintf("%v", elem.GetKey())
+			}
+		}
 		for _, u := range n.GetUpdate() {
-			pathStr := ""
+			uPath := pathStr
 			for _, elem := range u.GetPath().GetElem() {
-				pathStr += "/" + elem.GetName()
+				uPath += "/" + elem.GetName()
+				if len(elem.GetKey()) > 0 {
+					uPath += fmt.Sprintf("%v", elem.GetKey())
+				}
 			}
 			jsonVal := string(u.GetVal().GetJsonIetfVal())
-
-			if strings.Contains(jsonVal, "bgp") || strings.Contains(jsonVal, "owner") || strings.Contains(pathStr, "route") {
-				if len(jsonVal) > 150 {
-					jsonVal = jsonVal[:150] + "..."
-				}
-				fmt.Printf("Path: %-60s | Val: %s\n", pathStr, jsonVal)
-			}
+			fmt.Printf("Path: %s\nVal: %s\n\n", uPath, jsonVal)
 		}
 	}
 }

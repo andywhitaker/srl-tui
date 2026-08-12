@@ -830,4 +830,116 @@ func TestDynamicUptimeAndCPURAMCounters(t *testing.T) {
 	}
 }
 
+func TestRouteTableNextHopGroupResolution(t *testing.T) {
+	state := NewTelemetryState(16)
+	client := NewNDKClient("unix:///tmp/dummy.sock", state)
+
+	// Simulate gNMI route-table container JSON containing route, next-hop-group, and next-hop entries
+	routeTableJSON := []byte(`{
+		"srl_nokia-ip-route-tables:ipv4-unicast": {
+			"route": [
+				{
+					"ipv4-prefix": "2.2.2.2/32",
+					"route-owner": "bgp_mgr",
+					"preference": 170,
+					"metric": 0,
+					"next-hop-group": "1001",
+					"next-hop-group-network-instance": "default"
+				},
+				{
+					"ipv4-prefix": "10.1.10.0/24",
+					"route-owner": "net_inst_mgr",
+					"preference": 0,
+					"metric": 0,
+					"next-hop-group": "1002",
+					"next-hop-group-network-instance": "default"
+				}
+			]
+		},
+		"srl_nokia-ip-route-tables:next-hop-group": [
+			{
+				"index": "1001",
+				"next-hop": [
+					{"id": 0, "next-hop": "2001"},
+					{"id": 1, "next-hop": "2002"}
+				]
+			},
+			{
+				"index": "1002",
+				"next-hop": [
+					{"id": 0, "next-hop": "2003"}
+				]
+			}
+		],
+		"srl_nokia-ip-route-tables:next-hop": [
+			{
+				"index": "2001",
+				"type": "srl_nokia-ip-route-tables:indirect",
+				"ip-address": "10.1.10.10"
+			},
+			{
+				"index": "2002",
+				"type": "srl_nokia-ip-route-tables:indirect",
+				"ip-address": "10.1.20.20"
+			},
+			{
+				"index": "2003",
+				"type": "srl_nokia-ip-route-tables:direct",
+				"ip-address": "10.1.10.1",
+				"subinterface": "ethernet-1/1.0"
+			}
+		]
+	}`)
+
+	client.parseGNMIStreamNotification(&pb.Notification{
+		Timestamp: time.Now().UnixNano(),
+		Update: []*pb.Update{
+			{
+				Path: &pb.Path{Elem: []*pb.PathElem{
+					{Name: "network-instance", Key: map[string]string{"name": "default"}},
+					{Name: "route-table"},
+				}},
+				Val: &pb.TypedValue{Value: &pb.TypedValue_JsonIetfVal{JsonIetfVal: routeTableJSON}},
+			},
+		},
+	})
+
+	snap := state.Snapshot()
+	if len(snap.RouteTable) != 2 {
+		t.Fatalf("Expected 2 route entries in state, got %d", len(snap.RouteTable))
+	}
+
+	var bgpRoute, directRoute *RouteEntry
+	for i := range snap.RouteTable {
+		if snap.RouteTable[i].Prefix == "2.2.2.2/32" {
+			bgpRoute = &snap.RouteTable[i]
+		} else if snap.RouteTable[i].Prefix == "10.1.10.0/24" {
+			directRoute = &snap.RouteTable[i]
+		}
+	}
+
+	if bgpRoute == nil {
+		t.Fatalf("Missing 2.2.2.2/32 route entry")
+	}
+	if bgpRoute.Protocol != "bgp" {
+		t.Errorf("Expected protocol 'bgp', got '%s'", bgpRoute.Protocol)
+	}
+	if len(bgpRoute.NextHops) != 2 || bgpRoute.NextHops[0] != "10.1.10.10" || bgpRoute.NextHops[1] != "10.1.20.20" {
+		t.Errorf("Expected ECMP NextHops ['10.1.10.10', '10.1.20.20'], got %v", bgpRoute.NextHops)
+	}
+	if bgpRoute.NextHop != "10.1.10.10, 10.1.20.20" {
+		t.Errorf("Expected NextHop string '10.1.10.10, 10.1.20.20', got '%s'", bgpRoute.NextHop)
+	}
+
+	if directRoute == nil {
+		t.Fatalf("Missing 10.1.10.0/24 route entry")
+	}
+	if directRoute.Protocol != "direct" {
+		t.Errorf("Expected protocol 'direct', got '%s'", directRoute.Protocol)
+	}
+	if len(directRoute.NextHops) != 1 || directRoute.NextHops[0] != "10.1.10.1" {
+		t.Errorf("Expected NextHops ['10.1.10.1'], got %v", directRoute.NextHops)
+	}
+}
+
 

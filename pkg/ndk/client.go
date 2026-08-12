@@ -20,6 +20,13 @@ import (
 	"google.golang.org/grpc/metadata"
 )
 
+type NextHopDetails struct {
+	IPAddress    string
+	IndirectIP   string
+	Subinterface string
+	Type         string
+}
+
 type NDKClient struct {
 	socketPath    string
 	state         *TelemetryState
@@ -32,6 +39,8 @@ type NDKClient struct {
 	lastStatsTime time.Time
 	prevCpuIdle   uint64
 	prevCpuTotal  uint64
+	nhGroupMap    map[string]map[string][]string        // netInst -> nhgIndex -> []nhIndex
+	nhMap         map[string]map[string]NextHopDetails // netInst -> nhIndex -> NextHopDetails
 }
 
 func NewNDKClient(socketPath string, state *TelemetryState) *NDKClient {
@@ -45,6 +54,8 @@ func NewNDKClient(socketPath string, state *TelemetryState) *NDKClient {
 		agentName:   "srl_cyber_tui",
 		lastRxBytes: make(map[string]uint64),
 		lastTxBytes: make(map[string]uint64),
+		nhGroupMap:  make(map[string]map[string][]string),
+		nhMap:       make(map[string]map[string]NextHopDetails),
 	}
 }
 
@@ -273,17 +284,16 @@ func (c *NDKClient) runGNMISession(ctx context.Context, sock string) error {
 	paths := []*pb.Path{
 		{Elem: []*pb.PathElem{{Name: "interface", Key: map[string]string{"name": "*"}}}},
 		{Elem: []*pb.PathElem{{Name: "network-instance", Key: map[string]string{"name": "*"}}, {Name: "protocols"}, {Name: "bgp"}, {Name: "neighbor"}}},
-		{Elem: []*pb.PathElem{{Name: "network-instance", Key: map[string]string{"name": "*"}}, {Name: "route-table"}, {Name: "ipv4-unicast"}, {Name: "route"}}},
+		{Elem: []*pb.PathElem{{Name: "network-instance", Key: map[string]string{"name": "*"}}, {Name: "route-table"}}},
 		{Elem: []*pb.PathElem{{Name: "network-instance", Key: map[string]string{"name": "*"}}, {Name: "bridge-table"}, {Name: "mac-table"}, {Name: "mac"}}},
 		{Elem: []*pb.PathElem{{Name: "interface", Key: map[string]string{"name": "*"}}, {Name: "subinterface", Key: map[string]string{"index": "*"}}, {Name: "ipv4"}, {Name: "arp"}, {Name: "neighbor"}}},
-		{Elem: []*pb.PathElem{{Name: "tunnel-interface", Key: map[string]string{"name": "*"}}, {Name: "vxlan-interface"}}},
-		{Elem: []*pb.PathElem{{Name: "network-instance", Key: map[string]string{"name": "*"}}, {Name: "tunnel-table"}}},
+		{Elem: []*pb.PathElem{{Name: "tunnel-interface", Key: map[string]string{"name": "*"}}}},
+		{Elem: []*pb.PathElem{{Name: "network-instance", Key: map[string]string{"name": "*"}}}},
 		{Elem: []*pb.PathElem{{Name: "system"}, {Name: "lldp"}}},
 		{Elem: []*pb.PathElem{{Name: "system"}, {Name: "name"}}},
 		{Elem: []*pb.PathElem{{Name: "system"}, {Name: "information"}}},
 		{Elem: []*pb.PathElem{{Name: "system"}, {Name: "maintenance"}}},
 		{Elem: []*pb.PathElem{{Name: "platform"}}},
-		{Elem: []*pb.PathElem{{Name: "network-instance", Key: map[string]string{"name": "*"}}, {Name: "bgp-rib"}}},
 	}
 
 	var subs []*pb.Subscription
@@ -310,6 +320,7 @@ func (c *NDKClient) runGNMISession(ctx context.Context, sock string) error {
 
 	go c.fetchInitialInterfaceState(streamCtx, gnmiClient)
 	go c.fetchInitialBGPRIBState(streamCtx, gnmiClient)
+	go c.fetchInitialRouteTableState(streamCtx, gnmiClient)
 
 	for {
 		resp, err := stream.Recv()
@@ -420,6 +431,28 @@ func (c *NDKClient) fetchInitialBGPRIBState(parentCtx context.Context, client pb
 			{Elem: []*pb.PathElem{
 				{Name: "network-instance", Key: map[string]string{"name": "default"}},
 				{Name: "bgp-rib"},
+			}},
+		},
+		Encoding: pb.Encoding_JSON_IETF,
+	})
+	if err != nil {
+		return
+	}
+
+	for _, n := range getResp.GetNotification() {
+		c.parseGNMIStreamNotification(n)
+	}
+}
+
+func (c *NDKClient) fetchInitialRouteTableState(parentCtx context.Context, client pb.GNMIClient) {
+	ctx, cancel := context.WithTimeout(parentCtx, 5*time.Second)
+	defer cancel()
+
+	getResp, err := client.Get(ctx, &pb.GetRequest{
+		Path: []*pb.Path{
+			{Elem: []*pb.PathElem{
+				{Name: "network-instance", Key: map[string]string{"name": "*"}},
+				{Name: "route-table"},
 			}},
 		},
 		Encoding: pb.Encoding_JSON_IETF,
@@ -621,7 +654,8 @@ func (c *NDKClient) parseGNMIStreamNotification(notif *pb.Notification) {
 	var activeVNIs []string
 
 	// 1. Process gNMI Deletion Notifications
-	for _, delPath := range notif.GetDelete() {
+	for _, rawDelPath := range notif.GetDelete() {
+		delPath := combinePaths(notif.GetPrefix(), rawDelPath)
 		delStr := cleanPathString(delPath)
 		netInst := getElemKey(delPath, "network-instance", "name")
 
@@ -665,14 +699,15 @@ func (c *NDKClient) parseGNMIStreamNotification(notif *pb.Notification) {
 
 	// 2. Process gNMI Update Notifications
 	for _, u := range notif.GetUpdate() {
-		pathStr := cleanPathString(u.GetPath())
+		fullPath := combinePaths(notif.GetPrefix(), u.GetPath())
+		pathStr := cleanPathString(fullPath)
 
 		// Filter out internal FIB updates to prevent rapid log spam
-		if strings.Contains(pathStr, "/fib-programming") || strings.Contains(pathStr, "/next-hop-group") {
+		if strings.Contains(pathStr, "/fib-programming") {
 			continue
 		}
 
-		netInst := getElemKey(u.GetPath(), "network-instance", "name")
+		netInst := getElemKey(fullPath, "network-instance", "name")
 		if netInst == "" {
 			netInst = "default"
 		}
@@ -1175,77 +1210,8 @@ func (c *NDKClient) parseGNMIStreamNotification(notif *pb.Notification) {
 		}
 
 		// 3. IP Route Table Updates
-		if strings.Contains(pathStr, "/route-table") || strings.Contains(pathStr, "/route") {
-			var routeList []map[string]interface{}
-
-			if rArr, ok := dataMap["route"].([]interface{}); ok {
-				for _, item := range rArr {
-					if rMap, ok := item.(map[string]interface{}); ok {
-						routeList = append(routeList, rMap)
-					}
-				}
-			} else {
-				routeList = append(routeList, dataMap)
-			}
-
-			for _, rMap := range routeList {
-				prefix, _ := rMap["ipv4-prefix"].(string)
-				if prefix == "" {
-					prefix = getElemKey(u.GetPath(), "route", "ipv4-prefix")
-				}
-
-				owner, _ := rMap["route-owner"].(string)
-				if owner == "" {
-					owner = getElemKey(u.GetPath(), "route", "route-owner")
-				}
-
-				cleanOwner := owner
-				if strings.Contains(owner, "bgp") {
-					cleanOwner = "bgp"
-				} else if strings.Contains(owner, "static") {
-					cleanOwner = "static"
-				} else if strings.Contains(owner, "net_inst_mgr") || strings.Contains(owner, "local") || strings.Contains(owner, "direct") {
-					cleanOwner = "direct"
-				}
-
-				var nextHops []string
-				cleanNH := ""
-				if activeNH, ok := rMap["active-next-hop"].(string); ok && activeNH != "" && activeNH != netInst {
-					cleanNH = activeNH
-					nextHops = []string{activeNH}
-				} else if nhList, ok := rMap["next-hop"].([]interface{}); ok {
-					for _, nhItem := range nhList {
-						if nhMap, ok := nhItem.(map[string]interface{}); ok {
-							if ip, ok := nhMap["ip-address"].(string); ok && ip != "" {
-								nextHops = append(nextHops, ip)
-							}
-						}
-					}
-					if len(nextHops) > 0 {
-						cleanNH = strings.Join(nextHops, ", ")
-					}
-				}
-				if cleanNH == "" {
-					cleanNH = "direct"
-					nextHops = []string{"direct"}
-				}
-
-				pref, _ := rMap["preference"].(float64)
-				metric, _ := rMap["metric"].(float64)
-
-				if prefix != "" {
-					rKey := fmt.Sprintf("%s-%s", netInst, prefix)
-					routeMap[rKey] = RouteEntry{
-						Prefix:     prefix,
-						NextHop:    cleanNH,
-						NextHops:   nextHops,
-						Protocol:   cleanOwner,
-						Preference: uint32(pref),
-						Metric:     uint32(metric),
-						NetInst:    netInst,
-					}
-				}
-			}
+		if pathStr == "/" || pathStr == "" || strings.Contains(pathStr, "/route-table") || strings.Contains(pathStr, "/route") || strings.Contains(pathStr, "/next-hop") || strings.Contains(pathStr, "/network-instance") {
+			c.parseRouteTableUpdate(netInst, u.GetPath(), rootVal, dataMap, routeMap, evpnMap)
 		}
 
 		// 4. MAC Address Table Updates
@@ -1883,6 +1849,298 @@ func (c *NDKClient) parseGNMIStreamNotification(notif *pb.Notification) {
 	c.state.Unlock()
 }
 
+func (c *NDKClient) parseRouteTableUpdate(netInst string, path *pb.Path, rootVal interface{}, dataMap map[string]interface{}, routeMap map[string]RouteEntry, evpnMap map[string]EVPNRouteEntry) {
+	if m, ok := rootVal.(map[string]interface{}); ok {
+		for k, v := range m {
+			if k == "network-instance" || strings.HasSuffix(k, ":network-instance") {
+				if niList, ok := v.([]interface{}); ok {
+					for _, item := range niList {
+						if niMap, ok := item.(map[string]interface{}); ok {
+							niName, _ := niMap["name"].(string)
+							if niName == "" {
+								niName = netInst
+							}
+							for rk, rv := range niMap {
+								if rk == "route-table" || strings.HasSuffix(rk, ":route-table") {
+									if rtMap, ok := rv.(map[string]interface{}); ok {
+										c.parseRouteTableContainer(niName, path, rtMap, routeMap, evpnMap)
+									}
+								}
+							}
+						}
+					}
+					return
+				}
+			}
+		}
+	}
+
+	for rk, rv := range dataMap {
+		if rk == "route-table" || strings.HasSuffix(rk, ":route-table") {
+			if rtMap, ok := rv.(map[string]interface{}); ok {
+				c.parseRouteTableContainer(netInst, path, rtMap, routeMap, evpnMap)
+				return
+			}
+		}
+	}
+
+	c.parseRouteTableContainer(netInst, path, dataMap, routeMap, evpnMap)
+}
+
+func (c *NDKClient) parseRouteTableContainer(netInst string, path *pb.Path, rtMap map[string]interface{}, routeMap map[string]RouteEntry, evpnMap map[string]EVPNRouteEntry) {
+	if netInst == "" {
+		netInst = "default"
+	}
+
+	c.ingestNextHopGroups(netInst, rtMap)
+	c.ingestNextHops(netInst, rtMap)
+
+	var routeList []map[string]interface{}
+	for k, v := range rtMap {
+		if k == "ipv4-unicast" || strings.HasSuffix(k, ":ipv4-unicast") {
+			if ipv4Map, ok := v.(map[string]interface{}); ok {
+				for rk, rv := range ipv4Map {
+					if rk == "route" || strings.HasSuffix(rk, ":route") {
+						if rArr, ok := rv.([]interface{}); ok {
+							for _, item := range rArr {
+								if rMap, ok := item.(map[string]interface{}); ok {
+									routeList = append(routeList, rMap)
+								}
+							}
+						}
+					}
+				}
+			}
+		} else if k == "route" || strings.HasSuffix(k, ":route") {
+			if rArr, ok := v.([]interface{}); ok {
+				for _, item := range rArr {
+					if rMap, ok := item.(map[string]interface{}); ok {
+						routeList = append(routeList, rMap)
+					}
+				}
+			}
+		}
+	}
+	if len(routeList) == 0 {
+		if _, ok := rtMap["ipv4-prefix"]; ok {
+			routeList = append(routeList, rtMap)
+		}
+	}
+
+	for _, rMap := range routeList {
+		prefix, _ := rMap["ipv4-prefix"].(string)
+		if prefix == "" {
+			prefix = getElemKey(path, "route", "ipv4-prefix")
+		}
+
+		owner, _ := rMap["route-owner"].(string)
+		if owner == "" {
+			owner = getElemKey(path, "route", "route-owner")
+		}
+
+		cleanOwner := owner
+		if strings.Contains(owner, "bgp_evpn") || strings.Contains(owner, "evpn") {
+			cleanOwner = "bgp_evpn"
+		} else if strings.Contains(owner, "bgp") {
+			cleanOwner = "bgp"
+		} else if strings.Contains(owner, "static") {
+			cleanOwner = "static"
+		} else if strings.Contains(owner, "ospf") {
+			cleanOwner = "ospf"
+		} else if strings.Contains(owner, "dhcp") {
+			cleanOwner = "dhcp"
+		} else if strings.Contains(owner, "net_inst_mgr") || strings.Contains(owner, "local") || strings.Contains(owner, "direct") || strings.Contains(owner, "linux_mgr") {
+			cleanOwner = "direct"
+		}
+
+		prefVal, _ := parseUint32Val(rMap["preference"])
+		metricVal, _ := parseUint32Val(rMap["metric"])
+
+		nhgID := ""
+		if val, ok := rMap["next-hop-group"]; ok {
+			nhgID = fmt.Sprintf("%v", val)
+		}
+		nhgNetInst, _ := rMap["next-hop-group-network-instance"].(string)
+
+		nextHops, cleanNH := c.resolveNextHops(netInst, nhgNetInst, nhgID, rMap)
+
+		if prefix != "" {
+			rKey := fmt.Sprintf("%s-%s", netInst, prefix)
+			routeMap[rKey] = RouteEntry{
+				Prefix:     prefix,
+				NextHop:    cleanNH,
+				NextHops:   nextHops,
+				Protocol:   cleanOwner,
+				Preference: prefVal,
+				Metric:     metricVal,
+				NetInst:    netInst,
+			}
+		}
+	}
+}
+
+func (c *NDKClient) ingestNextHopGroups(netInst string, rtMap map[string]interface{}) {
+	var nhgArr []interface{}
+	for k, v := range rtMap {
+		if k == "next-hop-group" || strings.HasSuffix(k, ":next-hop-group") {
+			if arr, ok := v.([]interface{}); ok {
+				nhgArr = arr
+				break
+			}
+		}
+	}
+
+	if len(nhgArr) == 0 {
+		return
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.nhGroupMap == nil {
+		c.nhGroupMap = make(map[string]map[string][]string)
+	}
+	if c.nhGroupMap[netInst] == nil {
+		c.nhGroupMap[netInst] = make(map[string][]string)
+	}
+
+	for _, item := range nhgArr {
+		if nhgMap, ok := item.(map[string]interface{}); ok {
+			idxStr := fmt.Sprintf("%v", nhgMap["index"])
+			var nhRefs []string
+			if nhList, ok := nhgMap["next-hop"].([]interface{}); ok {
+				for _, nhRef := range nhList {
+					if refMap, ok := nhRef.(map[string]interface{}); ok {
+						if idVal, ok := refMap["next-hop"]; ok {
+							nhRefs = append(nhRefs, fmt.Sprintf("%v", idVal))
+						}
+					}
+				}
+			}
+			c.nhGroupMap[netInst][idxStr] = nhRefs
+		}
+	}
+}
+
+func (c *NDKClient) ingestNextHops(netInst string, rtMap map[string]interface{}) {
+	var nhArr []interface{}
+	for k, v := range rtMap {
+		if k == "next-hop" || strings.HasSuffix(k, ":next-hop") {
+			if arr, ok := v.([]interface{}); ok {
+				nhArr = arr
+				break
+			}
+		}
+	}
+
+	if len(nhArr) == 0 {
+		return
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.nhMap == nil {
+		c.nhMap = make(map[string]map[string]NextHopDetails)
+	}
+	if c.nhMap[netInst] == nil {
+		c.nhMap[netInst] = make(map[string]NextHopDetails)
+	}
+
+	for _, item := range nhArr {
+		if nhItemMap, ok := item.(map[string]interface{}); ok {
+			idxStr := fmt.Sprintf("%v", nhItemMap["index"])
+			ip, _ := nhItemMap["ip-address"].(string)
+			subintf, _ := nhItemMap["subinterface"].(string)
+			nhType, _ := nhItemMap["type"].(string)
+
+			indirectIP := ""
+			if indMap, ok := nhItemMap["indirect"].(map[string]interface{}); ok {
+				indirectIP, _ = indMap["ip-address"].(string)
+			}
+
+			c.nhMap[netInst][idxStr] = NextHopDetails{
+				IPAddress:    ip,
+				IndirectIP:   indirectIP,
+				Subinterface: subintf,
+				Type:         nhType,
+			}
+		}
+	}
+}
+
+func (c *NDKClient) resolveNextHops(netInst, nhgNetInst, nhgID string, rMap map[string]interface{}) ([]string, string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	var nhs []string
+	addNH := func(ip string) {
+		if ip == "" {
+			return
+		}
+		for _, existing := range nhs {
+			if existing == ip {
+				return
+			}
+		}
+		nhs = append(nhs, ip)
+	}
+
+	if nhgID != "" && nhgID != "<nil>" && nhgID != "0" {
+		targetNetInsts := []string{nhgNetInst, netInst, "default"}
+		for _, targetNI := range targetNetInsts {
+			if targetNI == "" {
+				continue
+			}
+			if nhg, foundNHG := c.nhGroupMap[targetNI][nhgID]; foundNHG {
+				for _, nhID := range nhg {
+					if nhObj, foundNH := c.nhMap[targetNI][nhID]; foundNH {
+						ip := nhObj.IPAddress
+						if ip == "" {
+							ip = nhObj.IndirectIP
+						}
+						if ip == "" {
+							ip = nhObj.Subinterface
+						}
+						if ip == "" {
+							if strings.Contains(nhObj.Type, "extract") || strings.Contains(nhObj.Type, "local") {
+								ip = "local"
+							} else if strings.Contains(nhObj.Type, "broadcast") {
+								ip = "broadcast"
+							}
+						}
+						addNH(ip)
+					}
+				}
+				if len(nhs) > 0 {
+					break
+				}
+			}
+		}
+	}
+
+	if len(nhs) == 0 {
+		if activeNH, ok := rMap["active-next-hop"].(string); ok && activeNH != "" && activeNH != netInst {
+			addNH(activeNH)
+		} else if nhList, ok := rMap["next-hop"].([]interface{}); ok {
+			for _, nhItem := range nhList {
+				if nhM, ok := nhItem.(map[string]interface{}); ok {
+					if ip, ok := nhM["ip-address"].(string); ok && ip != "" {
+						addNH(ip)
+					}
+				}
+			}
+		}
+	}
+
+	if len(nhs) == 0 {
+		addNH("direct")
+	}
+
+	cleanNH := strings.Join(nhs, ", ")
+	return nhs, cleanNH
+}
+
 func findBGPRIB(obj interface{}) map[string]interface{} {
 	if m, ok := obj.(map[string]interface{}); ok {
 		if _, hasAfi := m["afi-safi"]; hasAfi {
@@ -1916,6 +2174,18 @@ func cleanPathString(path *pb.Path) string {
 		elems = append(elems, name)
 	}
 	return "/" + strings.Join(elems, "/")
+}
+
+func combinePaths(prefix, path *pb.Path) *pb.Path {
+	if prefix == nil || len(prefix.GetElem()) == 0 {
+		return path
+	}
+	if path == nil || len(path.GetElem()) == 0 {
+		return prefix
+	}
+	return &pb.Path{
+		Elem: append(append([]*pb.PathElem{}, prefix.GetElem()...), path.GetElem()...),
+	}
 }
 
 func getElemKey(path *pb.Path, elemName, keyName string) string {
