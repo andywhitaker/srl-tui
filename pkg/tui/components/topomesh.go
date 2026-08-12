@@ -127,13 +127,31 @@ func RenderTopoMesh(snap *ndk.TelemetryState, focused bool, pal theme.Palette, w
 	diagramStr := strings.Join(styledDiagramLines, "\n")
 
 	// BGP Session Table
-	colHdrs := fmt.Sprintf("   %-19s%-11s%-11s%-17s%-17s%-19s%-11s%s",
-		"NEIGHBOR IP", "PEER AS", "TYPE", "STATE", "INTERFACE", "ACTIVE AFs", "UPTIME", "PREFIXES (Rx/Tx)",
+	colHdrs := fmt.Sprintf("  %s%s%s%s%s%s%s%s",
+		padRight("NEIGHBOR IP", 19),
+		padRight("PEER AS", 11),
+		padRight("TYPE", 11),
+		padRight("STATE", 17),
+		padRight("INTERFACE", 17),
+		padRight("ACTIVE AFs", 19),
+		padRight("UPTIME", 11),
+		"PREFIXES (Rx/Tx)",
+	)
+
+	sepTxt := fmt.Sprintf("  %s%s%s%s%s%s%s%s",
+		padRight("──────────────────", 19),
+		padRight("──────────", 11),
+		padRight("──────────", 11),
+		padRight("────────────────", 17),
+		padRight("────────────────", 17),
+		padRight("──────────────────", 19),
+		padRight("──────────", 11),
+		"────────────────",
 	)
 
 	var bgpRows []string
 	bgpRows = append(bgpRows, lipgloss.NewStyle().Bold(true).Foreground(pal.Primary).Background(pal.Background).Render(colHdrs))
-	bgpRows = append(bgpRows, lipgloss.NewStyle().Foreground(pal.Muted).Background(pal.Background).Render("  ────────────────── ────────── ────────── ──────────────── ──────────────── ────────────────── ────────── ────────────────"))
+	bgpRows = append(bgpRows, lipgloss.NewStyle().Foreground(pal.Muted).Background(pal.Background).Render(sepTxt))
 
 	if len(activeBgp) == 0 {
 		bgpRows = append(bgpRows, lipgloss.NewStyle().Foreground(pal.Subtext).Background(pal.Background).Render("  No matching BGP routing protocol adjacencies discovered"))
@@ -164,13 +182,14 @@ func RenderTopoMesh(snap *ndk.TelemetryState, focused bool, pal theme.Palette, w
 				afDisplay = "ipv4-unicast"
 			}
 
-			ipStr := lipgloss.NewStyle().Foreground(pal.Text).Background(pal.Background).Render(padRight(ipDisplay, 19))
-			asStr := lipgloss.NewStyle().Foreground(pal.Secondary).Background(pal.Background).Render(padRight(fmt.Sprintf("%d", peer.PeerASN), 11))
-			typeStr := lipgloss.NewStyle().Foreground(pal.Primary).Background(pal.Background).Render(padRight(peer.PeerType, 11))
-			stStr := stateStyle.Render(padRight(stateText, 17))
-			intfStr := lipgloss.NewStyle().Foreground(pal.Warning).Background(pal.Background).Render(padRight(peer.Interface, 17))
-			afStr := lipgloss.NewStyle().Foreground(pal.Primary).Background(pal.Background).Render(padRight(afDisplay, 19))
-			upStr := lipgloss.NewStyle().Foreground(pal.Subtext).Background(pal.Background).Render(padRight(peer.Uptime, 11))
+			sIP := padRight(ipDisplay, 19)
+			sAS := padRight(fmt.Sprintf("%d", peer.PeerASN), 11)
+			sType := padRight(peer.PeerType, 11)
+			sState := padRight(stateText, 17)
+			sIntf := padRight(peer.Interface, 17)
+			sAF := padRight(afDisplay, 19)
+			sUp := padRight(peer.Uptime, 11)
+
 			var pfxParts []string
 			if len(peer.AddrFamilies) > 0 {
 				for _, af := range peer.AddrFamilies {
@@ -185,19 +204,28 @@ func RenderTopoMesh(snap *ndk.TelemetryState, focused bool, pal theme.Palette, w
 			if pfxTxt == "" {
 				pfxTxt = fmt.Sprintf("%d/%d", peer.RxPrefixes, peer.TxPrefixes)
 			}
-			pfxStr := lipgloss.NewStyle().Foreground(pal.Text).Background(pal.Background).Render(pfxTxt)
+			sPfx := pfxTxt
 
 			prefixPointer := "  "
 			if i == selectedIdx {
-				prefixPointer = "> "
+				prefixPointer = "► "
 			}
 
 			var row string
 			if i == selectedIdx {
-				rowStr := fmt.Sprintf("%s%-18s %-10d %-10s %-16s %-16s %-18s %-10s %s", prefixPointer, ipDisplay, peer.PeerASN, peer.PeerType, stateText, peer.Interface, afDisplay, peer.Uptime, pfxTxt)
+				rowStr := fmt.Sprintf("%s%s%s%s%s%s%s%s%s", prefixPointer, sIP, sAS, sType, sState, sIntf, sAF, sUp, sPfx)
 				row = lipgloss.NewStyle().Foreground(pal.Background).Background(pal.Highlight).Bold(true).Render(rowStr)
 			} else {
-				row = lipgloss.NewStyle().Background(pal.Background).Render(fmt.Sprintf("%s%s%s%s%s%s%s%s%s", prefixPointer, ipStr, asStr, typeStr, stStr, intfStr, afStr, upStr, pfxStr))
+				cIP := lipgloss.NewStyle().Foreground(pal.Text).Background(pal.Background).Render(sIP)
+				cAS := lipgloss.NewStyle().Foreground(pal.Secondary).Background(pal.Background).Render(sAS)
+				cType := lipgloss.NewStyle().Foreground(pal.Primary).Background(pal.Background).Render(sType)
+				cState := stateStyle.Render(sState)
+				cIntf := lipgloss.NewStyle().Foreground(pal.Warning).Background(pal.Background).Render(sIntf)
+				cAF := lipgloss.NewStyle().Foreground(pal.Primary).Background(pal.Background).Render(sAF)
+				cUp := lipgloss.NewStyle().Foreground(pal.Subtext).Background(pal.Background).Render(sUp)
+				cPfx := lipgloss.NewStyle().Foreground(pal.Text).Background(pal.Background).Render(sPfx)
+
+				row = lipgloss.NewStyle().Background(pal.Background).Render(fmt.Sprintf("%s%s%s%s%s%s%s%s%s", prefixPointer, cIP, cAS, cType, cState, cIntf, cAF, cUp, cPfx))
 			}
 			bgpRows = append(bgpRows, row)
 		}

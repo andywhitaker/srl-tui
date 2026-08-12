@@ -190,7 +190,7 @@ func RenderEVPNView(snap *ndk.TelemetryState, activeFilter EVPNTypeFilter, selec
 
 	// Format plain text headers with exact column widths:
 	// CURSOR (2) + TYPE (7) + RD (16) + RT (14) + VNI (15) + STATUS (12) + PAYLOAD (36) + NEXT-HOP (12) + NEIGHBOR (25)
-	hdrTxt := fmt.Sprintf("  %s %s %s %s %s %s %s %s",
+	hdrTxt := padRight(fmt.Sprintf("  %s %s %s %s %s %s %s %s",
 		padRight("TYPE", 7),
 		padRight("RD", 16),
 		padRight("RT", 14),
@@ -199,8 +199,8 @@ func RenderEVPNView(snap *ndk.TelemetryState, activeFilter EVPNTypeFilter, selec
 		padRight("PAYLOAD / PREFIX", 36),
 		padRight("NEXT-HOP", 12),
 		padRight("NEIGHBOR", 25),
-	)
-	sepTxt := fmt.Sprintf("  %s %s %s %s %s %s %s %s",
+	), width-4)
+	sepTxt := padRight(fmt.Sprintf("  %s %s %s %s %s %s %s %s",
 		padRight("───────", 7),
 		padRight("────────────────", 16),
 		padRight("──────────────", 14),
@@ -209,7 +209,7 @@ func RenderEVPNView(snap *ndk.TelemetryState, activeFilter EVPNTypeFilter, selec
 		padRight("────────────────────────────────────", 36),
 		padRight("────────────", 12),
 		padRight("─────────────────────────", 25),
-	)
+	), width-4)
 
 	var evpnRows []string
 	evpnRows = append(evpnRows, lipgloss.NewStyle().Bold(true).Foreground(pal.Primary).Render(hdrTxt))
@@ -296,9 +296,9 @@ func RenderEVPNView(snap *ndk.TelemetryState, activeFilter EVPNTypeFilter, selec
 			sNextHop := padRight(r.NextHop, 13)
 			sNbr := padRight(nbrStr, 25)
 
-			rowWidth := width - 6
-			if rowWidth < 147 {
-				rowWidth = 147
+			rowWidth := width - 4
+			if rowWidth < 100 {
+				rowWidth = 100
 			}
 
 			var row string
@@ -537,8 +537,16 @@ func isLocalVRFConfigured(entry ndk.EVPNRouteEntry, snap *ndk.TelemetryState) bo
 }
 
 func padRight(s string, width int) string {
-	if len(s) >= width {
-		return s[:width]
+	w := lipgloss.Width(s)
+	if w > width {
+		runes := []rune(s)
+		if len(runes) > width {
+			return string(runes[:width])
+		}
+		return s
 	}
-	return s + strings.Repeat(" ", width-len(s))
+	if w == width {
+		return s
+	}
+	return s + strings.Repeat(" ", width-w)
 }
