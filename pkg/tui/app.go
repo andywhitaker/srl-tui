@@ -31,6 +31,16 @@ type LLDPDetailModal struct {
 	Entry  ndk.LLDPNeighbor
 }
 
+type ARPDetailModal struct {
+	Active bool
+	Entry  ndk.ARPEntry
+}
+
+type MACDetailModal struct {
+	Active bool
+	Entry  ndk.MACTableEntry
+}
+
 type BGPDetailModal struct {
 	Active        bool
 	Entry         ndk.BGPPeerState
@@ -59,6 +69,8 @@ type Model struct {
 	evpnModal          EVPNDetailModal
 	routeModal         RouteDetailModal
 	lldpModal          LLDPDetailModal
+	arpModal           ARPDetailModal
+	macModal           MACDetailModal
 	pageSearchInput    textinput.Model
 	pageSearchActive   bool
 	width              int
@@ -98,6 +110,8 @@ func NewModelWithClient(ctx context.Context, state *ndk.TelemetryState, initialT
 		evpnModal:        EVPNDetailModal{Active: false},
 		routeModal:       RouteDetailModal{Active: false},
 		lldpModal:        LLDPDetailModal{Active: false},
+		arpModal:         ARPDetailModal{Active: false},
+		macModal:         MACDetailModal{Active: false},
 		pageSearchInput:  ti,
 		pageSearchActive: false,
 		width:            120,
@@ -254,6 +268,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.lldpModal.Active {
 			if msg.String() == "esc" || msg.String() == "enter" || msg.String() == "q" {
 				m.lldpModal.Active = false
+			}
+			return m, nil
+		}
+
+		if m.arpModal.Active {
+			if msg.String() == "esc" || msg.String() == "enter" || msg.String() == "q" {
+				m.arpModal.Active = false
+			}
+			return m, nil
+		}
+
+		if m.macModal.Active {
+			if msg.String() == "esc" || msg.String() == "enter" || msg.String() == "q" {
+				m.macModal.Active = false
 			}
 			return m, nil
 		}
@@ -424,6 +452,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						Entry:  bgpPeers[m.bgpSelIdx],
 					}
 				}
+			} else if m.activeTab == components.TabArpMac {
+				if m.arpMacView.ActivePane == 0 {
+					arpEntries := components.GetFilteredARP(snap, m.pageSearchInput.Value())
+					if m.arpMacView.ARPSelIdx >= 0 && m.arpMacView.ARPSelIdx < len(arpEntries) {
+						m.arpModal = ARPDetailModal{
+							Active: true,
+							Entry:  arpEntries[m.arpMacView.ARPSelIdx],
+						}
+					}
+				} else {
+					macEntries := components.GetFilteredMAC(snap, m.pageSearchInput.Value())
+					if m.arpMacView.MACSelIdx >= 0 && m.arpMacView.MACSelIdx < len(macEntries) {
+						m.macModal = MACDetailModal{
+							Active: true,
+							Entry:  macEntries[m.arpMacView.MACSelIdx],
+						}
+					}
+				}
 			} else if m.activeTab == components.TabLLDP {
 				neighbors := components.GetFilteredLLDP(snap, m.pageSearchInput.Value())
 				if m.lldpView.SelectedIdx >= 0 && m.lldpView.SelectedIdx < len(neighbors) {
@@ -497,7 +543,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.bgpSelIdx++
 				}
 			} else if m.activeTab == components.TabArpMac {
-				m.arpMacView.ScrollDown()
+				snap := m.state.state.Snapshot()
+				arpEntries := components.GetFilteredARP(snap, m.pageSearchInput.Value())
+				macEntries := components.GetFilteredMAC(snap, m.pageSearchInput.Value())
+				m.arpMacView.ScrollDown(len(arpEntries), len(macEntries))
 			} else if m.activeTab == components.TabLLDP {
 				snap := m.state.state.Snapshot()
 				neighbors := components.GetFilteredLLDP(snap, m.pageSearchInput.Value())
@@ -541,7 +590,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "pgdown", "ctrl+d":
 			if m.activeTab == components.TabArpMac {
-				m.arpMacView.PageDown()
+				snap := m.state.state.Snapshot()
+				arpEntries := components.GetFilteredARP(snap, m.pageSearchInput.Value())
+				macEntries := components.GetFilteredMAC(snap, m.pageSearchInput.Value())
+				m.arpMacView.PageDown(len(arpEntries), len(macEntries))
 			} else if m.activeTab == components.TabLLDP {
 				snap := m.state.state.Snapshot()
 				neighbors := components.GetFilteredLLDP(snap, m.pageSearchInput.Value())
@@ -657,6 +709,16 @@ func (m Model) View() string {
 		return overlayModal(fullView, modal, m.width, m.height)
 	}
 
+	if m.arpModal.Active {
+		modal := components.RenderARPDetailModal(m.arpModal.Entry, snap, m.theme, m.width, m.height)
+		return overlayModal(fullView, modal, m.width, m.height)
+	}
+
+	if m.macModal.Active {
+		modal := components.RenderMACDetailModal(m.macModal.Entry, snap, m.theme, m.width, m.height)
+		return overlayModal(fullView, modal, m.width, m.height)
+	}
+
 	if m.routeModal.Active {
 		modal := components.RenderRouteDetailModal(m.routeModal.Entry, snap, m.theme, m.width, m.height)
 		return overlayModal(fullView, modal, m.width, m.height)
@@ -682,7 +744,6 @@ func (m Model) View() string {
 		return overlayModal(fullView, inspectorView, m.width, m.height)
 	}
 
-
 	if m.showHelp {
 		helpModal := RenderHelpOverlay(m.theme, m.width, m.height)
 		return overlayModal(fullView, helpModal, m.width, m.height)
@@ -699,6 +760,10 @@ func (m *Model) resetViewSelections() {
 	}
 	if m.lldpView != nil {
 		m.lldpView.SelectedIdx = 0
+	}
+	if m.arpMacView != nil {
+		m.arpMacView.ARPSelIdx = 0
+		m.arpMacView.MACSelIdx = 0
 	}
 }
 
