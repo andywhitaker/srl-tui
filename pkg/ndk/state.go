@@ -44,6 +44,7 @@ type BGPPeerState struct {
 	PeerType         string             `json:"peer-type"`     // "INTERNAL", "EXTERNAL"
 	Interface        string             `json:"interface"`
 	Uptime           string             `json:"uptime"`
+	LastEstablished  time.Time          `json:"last_established"` // Timestamp when neighbor session became ESTABLISHED
 	RxPrefixes       uint32             `json:"rx_prefixes"`
 	TxPrefixes       uint32             `json:"tx_prefixes"`
 	AFStats          map[string]AFStats `json:"af_stats"`          // Per-address family stats e.g. "evpn": {Rx: 39, Tx: 13}
@@ -341,6 +342,27 @@ func (s *TelemetryState) SetPortAdminState(portName string, adminState string) {
 }
 
 
+func FormatUptimeDuration(dur time.Duration) string {
+	if dur < 0 {
+		dur = 0
+	}
+	days := int(dur.Hours()) / 24
+	hours := int(dur.Hours()) % 24
+	minutes := int(dur.Minutes()) % 60
+	seconds := int(dur.Seconds()) % 60
+
+	if days > 0 {
+		return fmt.Sprintf("%dd %02dh", days, hours)
+	}
+	if hours > 0 {
+		return fmt.Sprintf("%dh %02dm", hours, minutes)
+	}
+	if minutes > 0 {
+		return fmt.Sprintf("%dm%02ds", minutes, seconds)
+	}
+	return fmt.Sprintf("%ds", seconds)
+}
+
 func (s *TelemetryState) Snapshot() *TelemetryState {
 	if s.mu != nil {
 		s.mu.RLock()
@@ -356,11 +378,16 @@ func (s *TelemetryState) Snapshot() *TelemetryState {
 		ramVal = 14.0
 	}
 
+	sysUptime := s.Uptime
+	if !s.StartTime.IsZero() {
+		sysUptime = time.Since(s.StartTime)
+	}
+
 	snap := &TelemetryState{
 		Hostname:      s.Hostname,
 		Platform:      s.Platform,
 		OSVersion:     s.OSVersion,
-		Uptime:        s.Uptime,
+		Uptime:        sysUptime,
 		StartTime:     s.StartTime,
 		CPUUsage:      cpuVal,
 		RAMUsage:      ramVal,
@@ -387,6 +414,15 @@ func (s *TelemetryState) Snapshot() *TelemetryState {
 	snap.BGPPeers = make([]BGPPeerState, len(s.BGPPeers))
 	for i, p := range s.BGPPeers {
 		snap.BGPPeers[i] = p
+		if strings.ToUpper(p.SessionState) == "ESTABLISHED" {
+			if !p.LastEstablished.IsZero() {
+				snap.BGPPeers[i].Uptime = FormatUptimeDuration(time.Since(p.LastEstablished))
+			} else if p.Uptime == "" || p.Uptime == "-" || p.Uptime == "established" {
+				snap.BGPPeers[i].Uptime = "0s"
+			}
+		} else {
+			snap.BGPPeers[i].Uptime = "-"
+		}
 		if len(p.AddrFamilies) > 0 {
 			snap.BGPPeers[i].AddrFamilies = make([]string, len(p.AddrFamilies))
 			copy(snap.BGPPeers[i].AddrFamilies, p.AddrFamilies)

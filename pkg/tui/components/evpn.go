@@ -86,7 +86,7 @@ func RenderEVPNView(snap *ndk.TelemetryState, activeFilter EVPNTypeFilter, selec
 		height = 10
 	}
 
-	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(pal.Primary)
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(pal.Primary).Background(pal.Background)
 
 	filteredRoutes := GetFilteredEVPNRoutes(snap, activeFilter, searchQuery, showUnimported)
 	totalCount := len(filteredRoutes)
@@ -124,7 +124,7 @@ func RenderEVPNView(snap *ndk.TelemetryState, activeFilter EVPNTypeFilter, selec
 		} else {
 			tStyle := lipgloss.NewStyle().
 				Foreground(pal.Subtext).
-				Background(pal.Surface).
+				Background(pal.Background).
 				Padding(0, 1)
 			filterTabs = append(filterTabs, tStyle.Render(opt.Label))
 		}
@@ -134,12 +134,12 @@ func RenderEVPNView(snap *ndk.TelemetryState, activeFilter EVPNTypeFilter, selec
 	if showUnimported {
 		toggleBadge = lipgloss.NewStyle().Bold(true).Foreground(pal.Background).Background(pal.Warning).Padding(0, 1).Render("[u] UNIMPORTED: SHOWN")
 	} else {
-		toggleBadge = lipgloss.NewStyle().Bold(true).Foreground(pal.Subtext).Background(pal.Surface).Padding(0, 1).Render("[u] UNIMPORTED: HIDDEN (Press 'u' to toggle)")
+		toggleBadge = lipgloss.NewStyle().Bold(true).Foreground(pal.Subtext).Background(pal.Background).Padding(0, 1).Render("[u] UNIMPORTED: HIDDEN (Press 'u' to toggle)")
 	}
 
-	filterBarStr := strings.Join(filterTabs, " ") + "  " + toggleBadge
+	filterBarStr := lipgloss.NewStyle().Background(pal.Background).Render(strings.Join(filterTabs, " ") + "  " + toggleBadge)
 
-	summaryStr := lipgloss.NewStyle().Foreground(pal.Text).Render(
+	summaryStr := lipgloss.NewStyle().Foreground(pal.Text).Background(pal.Background).Render(
 		fmt.Sprintf("Showing: %d/%d Routes  |  ● Imported (FIB): %d  |  ◯ Unimported (RIB Only): %d",
 			totalCount, totalMatchingAll, importedCount, unimportedCount),
 	)
@@ -150,22 +150,27 @@ func RenderEVPNView(snap *ndk.TelemetryState, activeFilter EVPNTypeFilter, selec
 		searchBarStr = lipgloss.NewStyle().
 			Border(lipgloss.NormalBorder()).
 			BorderForeground(pal.Primary).
+			Background(pal.Background).
 			Padding(0, 1).
 			Render("🔍 Search Filter: " + searchInputView)
 	} else if searchQuery != "" {
 		searchBarStr = lipgloss.NewStyle().
 			Foreground(pal.Secondary).
+			Background(pal.Background).
 			Render(fmt.Sprintf("🔍 Active Filter: %q (Press '/' to edit, Esc to clear)", searchQuery))
 	} else {
 		searchBarStr = lipgloss.NewStyle().
 			Foreground(pal.Subtext).
+			Background(pal.Background).
 			Render("Press '/' to search/filter EVPN routes...")
 	}
 
-	headerBlock := titleStyle.Render("█ EVPN BGP TELEMETRY & OVERLAY ROUTING TABLE") + "\n" +
-		filterBarStr + "\n" +
-		summaryStr + "\n" +
-		searchBarStr
+	headerBlock := lipgloss.NewStyle().Background(pal.Background).Render(
+		titleStyle.Render("█ EVPN BGP TELEMETRY & OVERLAY ROUTING TABLE") + "\n" +
+			filterBarStr + "\n" +
+			summaryStr + "\n" +
+			searchBarStr,
+	)
 
 	// Dynamic scroll window calculation
 	visibleRowCount := height - 11
@@ -282,13 +287,13 @@ func RenderEVPNView(snap *ndk.TelemetryState, activeFilter EVPNTypeFilter, selec
 				nbrStr = r.Neighbor
 			}
 
-			sType := padRight(typeBadge, 7)
-			sRD := padRight(r.RD, 16)
-			sRT := padRight(rtStr, 14)
-			sVNI := padRight(vniStr, 15)
-			sStatus := padRight(statusText, 12)
-			sPayload := padRight(payload, 36)
-			sNextHop := padRight(r.NextHop, 12)
+			sType := padRight(typeBadge, 8)
+			sRD := padRight(r.RD, 17)
+			sRT := padRight(rtStr, 15)
+			sVNI := padRight(vniStr, 16)
+			sStatus := padRight(statusText, 13)
+			sPayload := padRight(payload, 37)
+			sNextHop := padRight(r.NextHop, 13)
 			sNbr := padRight(nbrStr, 25)
 
 			rowWidth := width - 6
@@ -298,7 +303,7 @@ func RenderEVPNView(snap *ndk.TelemetryState, activeFilter EVPNTypeFilter, selec
 
 			var row string
 			if i == selectedIdx {
-				rawRow := fmt.Sprintf("► %s %s %s %s %s %s %s %s", sType, sRD, sRT, sVNI, sStatus, sPayload, sNextHop, sNbr)
+				rawRow := fmt.Sprintf("► %s%s%s%s%s%s%s%s", sType, sRD, sRT, sVNI, sStatus, sPayload, sNextHop, sNbr)
 				rawRow = padRight(rawRow, rowWidth)
 				row = lipgloss.NewStyle().
 					Bold(true).
@@ -306,16 +311,16 @@ func RenderEVPNView(snap *ndk.TelemetryState, activeFilter EVPNTypeFilter, selec
 					Background(pal.Highlight).
 					Render(rawRow)
 			} else {
-				cType := lipgloss.NewStyle().Foreground(typeColor).Bold(true).Render(sType)
-				cRD := lipgloss.NewStyle().Foreground(pal.Text).Render(sRD)
-				cRT := lipgloss.NewStyle().Foreground(pal.Secondary).Render(sRT)
-				cVNI := lipgloss.NewStyle().Foreground(pal.Warning).Render(sVNI)
-				cStatus := lipgloss.NewStyle().Foreground(statusColor).Bold(true).Render(sStatus)
-				cPayload := lipgloss.NewStyle().Foreground(pal.Text).Render(sPayload)
-				cNextHop := lipgloss.NewStyle().Foreground(pal.Success).Render(sNextHop)
-				cNbr := lipgloss.NewStyle().Foreground(pal.Subtext).Render(sNbr)
+				cType := lipgloss.NewStyle().Foreground(typeColor).Background(pal.Background).Bold(true).Render(sType)
+				cRD := lipgloss.NewStyle().Foreground(pal.Text).Background(pal.Background).Render(sRD)
+				cRT := lipgloss.NewStyle().Foreground(pal.Secondary).Background(pal.Background).Render(sRT)
+				cVNI := lipgloss.NewStyle().Foreground(pal.Warning).Background(pal.Background).Render(sVNI)
+				cStatus := lipgloss.NewStyle().Foreground(statusColor).Background(pal.Background).Bold(true).Render(sStatus)
+				cPayload := lipgloss.NewStyle().Foreground(pal.Text).Background(pal.Background).Render(sPayload)
+				cNextHop := lipgloss.NewStyle().Foreground(pal.Success).Background(pal.Background).Render(sNextHop)
+				cNbr := lipgloss.NewStyle().Foreground(pal.Subtext).Background(pal.Background).Render(sNbr)
 
-				row = fmt.Sprintf("  %s %s %s %s %s %s %s %s", cType, cRD, cRT, cVNI, cStatus, cPayload, cNextHop, cNbr)
+				row = lipgloss.NewStyle().Background(pal.Background).Render(fmt.Sprintf("  %s%s%s%s%s%s%s%s", cType, cRD, cRT, cVNI, cStatus, cPayload, cNextHop, cNbr))
 			}
 
 			evpnRows = append(evpnRows, row)
@@ -338,7 +343,8 @@ func RenderEVPNView(snap *ndk.TelemetryState, activeFilter EVPNTypeFilter, selec
 	boxStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(pal.Secondary).
-		Background(pal.Surface).
+		BorderBackground(pal.Background).
+		Background(pal.Background).
 		Width(width - 2).
 		Height(height - 2).
 		Padding(0, 1)
@@ -359,9 +365,9 @@ func RenderEVPNDetailModal(entry ndk.EVPNRouteEntry, pal theme.Palette, width, h
 		Background(pal.Primary).
 		Padding(0, 1)
 
-	labelStyle := lipgloss.NewStyle().Bold(true).Foreground(pal.Secondary)
-	valStyle := lipgloss.NewStyle().Foreground(pal.Text)
-	dimStyle := lipgloss.NewStyle().Foreground(pal.Subtext)
+	labelStyle := lipgloss.NewStyle().Bold(true).Foreground(pal.Secondary).Background(pal.Background)
+	valStyle := lipgloss.NewStyle().Foreground(pal.Text).Background(pal.Background)
+	dimStyle := lipgloss.NewStyle().Foreground(pal.Subtext).Background(pal.Background)
 
 	typeBadge := fmt.Sprintf("TYPE-%d", entry.RouteType)
 	var typeDesc string
@@ -379,9 +385,9 @@ func RenderEVPNDetailModal(entry ndk.EVPNRouteEntry, pal theme.Palette, width, h
 	}
 
 	isInstalled := entry.Status == "u*>" || entry.Status == "active"
-	statusBadge := lipgloss.NewStyle().Bold(true).Foreground(pal.Success).Render("● IMPORTED & INSTALLED IN LOCAL FIB (u*>)")
+	statusBadge := lipgloss.NewStyle().Bold(true).Foreground(pal.Success).Background(pal.Background).Render("● IMPORTED & INSTALLED IN LOCAL FIB (u*>)")
 	if !isInstalled {
-		statusBadge = lipgloss.NewStyle().Bold(true).Foreground(pal.Warning).Render("◯ UNIMPORTED (BGP-RIB ONLY) (r*)")
+		statusBadge = lipgloss.NewStyle().Bold(true).Foreground(pal.Warning).Background(pal.Background).Render("◯ UNIMPORTED (BGP-RIB ONLY) (r*)")
 	}
 
 	unimportedReason := "-"
@@ -391,31 +397,31 @@ func RenderEVPNDetailModal(entry ndk.EVPNRouteEntry, pal theme.Palette, width, h
 
 	lines := []string{
 		fmt.Sprintf("%s  %s", titleStyle.Render("EVPN OVERLAY ROUTE DETAIL"), statusBadge),
-		strings.Repeat("─", modalWidth-4),
-		fmt.Sprintf("%s %s (%s)", labelStyle.Render("Route Type:   "), valStyle.Render(typeBadge), dimStyle.Render(typeDesc)),
-		fmt.Sprintf("%s %s", labelStyle.Render("Route Dist:   "), valStyle.Render(entry.RD)),
-		fmt.Sprintf("%s %s", labelStyle.Render("Route Target: "), valStyle.Render(entry.RT)),
-		fmt.Sprintf("%s %s", labelStyle.Render("VNI ID:       "), valStyle.Render(entry.VNI)),
+		lipgloss.NewStyle().Foreground(pal.Muted).Background(pal.Background).Render(strings.Repeat("─", modalWidth-4)),
+		fmt.Sprintf("%s%s (%s)", labelStyle.Render("Route Type:   "), valStyle.Render(" "+typeBadge), dimStyle.Render(typeDesc)),
+		fmt.Sprintf("%s%s", labelStyle.Render("Route Dist:   "), valStyle.Render(" "+entry.RD)),
+		fmt.Sprintf("%s%s", labelStyle.Render("Route Target: "), valStyle.Render(" "+entry.RT)),
+		fmt.Sprintf("%s%s", labelStyle.Render("VNI ID:       "), valStyle.Render(" "+entry.VNI)),
 	}
 
 	if entry.RouteType == 2 {
 		lines = append(lines,
-			fmt.Sprintf("%s %s", labelStyle.Render("MAC Address:  "), valStyle.Render(entry.MAC)),
-			fmt.Sprintf("%s %s", labelStyle.Render("IP Address:   "), valStyle.Render(entry.IP)),
+			fmt.Sprintf("%s%s", labelStyle.Render("MAC Address:  "), valStyle.Render(" "+entry.MAC)),
+			fmt.Sprintf("%s%s", labelStyle.Render("IP Address:   "), valStyle.Render(" "+entry.IP)),
 		)
 	} else if entry.RouteType == 3 {
 		lines = append(lines,
-			fmt.Sprintf("%s %s", labelStyle.Render("Tunnel Type:  "), valStyle.Render("Inclusive Multicast BUM Tunnel")),
-			fmt.Sprintf("%s %s", labelStyle.Render("Originator IP:"), valStyle.Render(entry.NextHop)),
+			fmt.Sprintf("%s%s", labelStyle.Render("Tunnel Type:  "), valStyle.Render(" Inclusive Multicast BUM Tunnel")),
+			fmt.Sprintf("%s%s", labelStyle.Render("Originator IP:"), valStyle.Render(" "+entry.NextHop)),
 		)
 	} else if entry.RouteType == 5 {
 		lines = append(lines,
-			fmt.Sprintf("%s %s", labelStyle.Render("IP Prefix:    "), valStyle.Render(entry.Prefix)),
+			fmt.Sprintf("%s%s", labelStyle.Render("IP Prefix:    "), valStyle.Render(" "+entry.Prefix)),
 		)
 	}
 
 	if entry.ESI != "" {
-		lines = append(lines, fmt.Sprintf("%s %s", labelStyle.Render("ESI Value:    "), valStyle.Render(entry.ESI)))
+		lines = append(lines, fmt.Sprintf("%s%s", labelStyle.Render("ESI Value:    "), valStyle.Render(" "+entry.ESI)))
 	}
 
 	nbrStr := entry.Neighbor
@@ -434,30 +440,30 @@ func RenderEVPNDetailModal(entry ndk.EVPNRouteEntry, pal theme.Palette, width, h
 	}
 
 	lines = append(lines,
-		strings.Repeat("─", modalWidth-4),
-		fmt.Sprintf("%s %s", labelStyle.Render("Primary NextHop:"), valStyle.Render(entry.NextHop)),
-		fmt.Sprintf("%s %s", labelStyle.Render("BGP Peer (Nbr): "), valStyle.Render(nbrStr)),
-		fmt.Sprintf("%s %s", labelStyle.Render("Originating VRF:"), valStyle.Render(entry.Originator)),
-		fmt.Sprintf("%s %s", labelStyle.Render("FIB Status:     "), valStyle.Render(entry.Status)),
-		fmt.Sprintf("%s %s", labelStyle.Render("Reason Unimport:"), lipgloss.NewStyle().Foreground(pal.Warning).Render(unimportedReason)),
+		lipgloss.NewStyle().Foreground(pal.Muted).Background(pal.Background).Render(strings.Repeat("─", modalWidth-4)),
+		fmt.Sprintf("%s%s", labelStyle.Render("Primary NextHop:"), valStyle.Render(" "+entry.NextHop)),
+		fmt.Sprintf("%s%s", labelStyle.Render("BGP Peer (Nbr): "), valStyle.Render(" "+nbrStr)),
+		fmt.Sprintf("%s%s", labelStyle.Render("Originating VRF:"), valStyle.Render(" "+entry.Originator)),
+		fmt.Sprintf("%s%s", labelStyle.Render("FIB Status:     "), valStyle.Render(" "+entry.Status)),
+		fmt.Sprintf("%s%s", labelStyle.Render("Reason Unimport:"), lipgloss.NewStyle().Foreground(pal.Warning).Background(pal.Background).Render(" "+unimportedReason)),
 	)
 
 	if len(entry.PathVersions) > 0 {
 		lines = append(lines,
-			strings.Repeat("─", modalWidth-4),
-			lipgloss.NewStyle().Bold(true).Foreground(pal.Primary).Render("BGP MULTI-PATH BGP RIB VERSIONS:"),
+			lipgloss.NewStyle().Foreground(pal.Muted).Background(pal.Background).Render(strings.Repeat("─", modalWidth-4)),
+			lipgloss.NewStyle().Bold(true).Foreground(pal.Primary).Background(pal.Background).Render("BGP MULTI-PATH BGP RIB VERSIONS:"),
 		)
 		for _, pv := range entry.PathVersions {
 			var pStatus string
 			switch {
 			case pv.StatusCode == "u*>":
-				pStatus = lipgloss.NewStyle().Foreground(pal.Success).Render("u*> (Best Path)")
+				pStatus = lipgloss.NewStyle().Foreground(pal.Success).Background(pal.Background).Render("u*> (Best Path)")
 			case pv.StatusCode == "*" || pv.StatusCode == "u*":
-				pStatus = lipgloss.NewStyle().Foreground(pal.Secondary).Render("*   (Valid ECMP Path)")
-			case strings.HasPrefix(pv.StatusCode, "r"):
-				pStatus = lipgloss.NewStyle().Foreground(pal.Warning).Render("r*  (RIB Only / Unimported)")
+				pStatus = lipgloss.NewStyle().Foreground(pal.Secondary).Background(pal.Background).Render("*   (Valid ECMP Path)")
+			case strings.HasPrefix(pv.StatusCode, "r*"):
+				pStatus = lipgloss.NewStyle().Foreground(pal.Warning).Background(pal.Background).Render("r*  (RIB Only / Unimported)")
 			default:
-				pStatus = lipgloss.NewStyle().Foreground(pal.Subtext).Render(fmt.Sprintf("%-3s (Valid Alternate)", pv.StatusCode))
+				pStatus = lipgloss.NewStyle().Foreground(pal.Subtext).Background(pal.Background).Render(fmt.Sprintf("%-3s (Valid Alternate)", pv.StatusCode))
 			}
 			lines = append(lines, fmt.Sprintf("  • Peer: %s  NextHop: %s  Status: %s",
 				valStyle.Render(padRight(pv.Neighbor, 14)),
@@ -468,18 +474,34 @@ func RenderEVPNDetailModal(entry ndk.EVPNRouteEntry, pal theme.Palette, width, h
 	}
 
 	lines = append(lines,
-		strings.Repeat("─", modalWidth-4),
+		lipgloss.NewStyle().Foreground(pal.Muted).Background(pal.Background).Render(strings.Repeat("─", modalWidth-4)),
 		dimStyle.Render("Press [Esc] or [q] to close detail modal"),
 	)
 
 	modalBox := lipgloss.NewStyle().
 		Border(lipgloss.DoubleBorder()).
 		BorderForeground(pal.Primary).
-		Background(pal.Surface).
+		BorderBackground(pal.Background).
+		Background(pal.Background).
 		Padding(1, 2).
 		Width(modalWidth)
 
-	return modalBox.Render(strings.Join(lines, "\n"))
+	rawContent := strings.Join(lines, "\n")
+	contentWidth := modalWidth - 4
+	r, g, b, _ := pal.Background.RGBA()
+	bgSeq := fmt.Sprintf("\x1b[48;2;%d;%d;%dm", uint8(r>>8), uint8(g>>8), uint8(b>>8))
+	resetSeq := fmt.Sprintf("\x1b[0m%s", bgSeq)
+
+	var styledLines []string
+	for _, l := range strings.Split(rawContent, "\n") {
+		w := lipgloss.Width(l)
+		if w < contentWidth {
+			l += strings.Repeat(" ", contentWidth-w)
+		}
+		cleaned := strings.ReplaceAll(l, "\x1b[0m", resetSeq)
+		styledLines = append(styledLines, bgSeq+cleaned+"\x1b[0m")
+	}
+	return modalBox.Render(strings.Join(styledLines, "\n"))
 }
 
 func getEVPNUnimportedReason(entry ndk.EVPNRouteEntry, snap *ndk.TelemetryState) string {

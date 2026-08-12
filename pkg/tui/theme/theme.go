@@ -43,7 +43,7 @@ var Cyberpunk = Palette{
 	Error:        lipgloss.Color("#FF0055"), // Electric Crimson
 	Muted:        lipgloss.Color("#4A5568"), // Slate Gray
 	Background:   lipgloss.Color("#0A0E17"), // Deep Cyber Space
-	Surface:      lipgloss.Color("#121824"), // Panel Fill
+	Surface:      lipgloss.Color("#0A0E17"), // Consistent Background Fill
 	Text:         lipgloss.Color("#E2E8F0"), // Crisp Light
 	Subtext:      lipgloss.Color("#8A99AD"), // Muted Blue Gray
 	Highlight:    lipgloss.Color("#7928CA"), // Neon Purple Selection
@@ -61,7 +61,7 @@ var Synthwave = Palette{
 	Error:        lipgloss.Color("#E63946"), // Red
 	Muted:        lipgloss.Color("#480CA8"), // Deep Violet Muted
 	Background:   lipgloss.Color("#10002B"), // Midnight Purple
-	Surface:      lipgloss.Color("#240046"), // Panel Deep Purple
+	Surface:      lipgloss.Color("#10002B"), // Consistent Background Fill
 	Text:         lipgloss.Color("#F8F9FA"), // Off White
 	Subtext:      lipgloss.Color("#B8C0C2"), // Light Gray
 	Highlight:    lipgloss.Color("#7209B7"), // Violet Highlight
@@ -79,7 +79,7 @@ var Matrix = Palette{
 	Error:        lipgloss.Color("#FF3333"), // Red
 	Muted:        lipgloss.Color("#003B00"), // Dark Phosphor
 	Background:   lipgloss.Color("#050B05"), // Dark Matrix Void
-	Surface:      lipgloss.Color("#0A140A"), // Matrix Panel
+	Surface:      lipgloss.Color("#050B05"), // Consistent Background Fill
 	Text:         lipgloss.Color("#D0FFD0"), // Phosphor White Green
 	Subtext:      lipgloss.Color("#4A804A"), // Dim Green
 	Highlight:    lipgloss.Color("#005500"), // Green Box
@@ -97,7 +97,7 @@ var Monokai = Palette{
 	Error:        lipgloss.Color("#FF6188"), // Coral Red
 	Muted:        lipgloss.Color("#5B595C"), // Medium Charcoal
 	Background:   lipgloss.Color("#19181A"), // Dark Charcoal
-	Surface:      lipgloss.Color("#221F22"), // Charcoal Card
+	Surface:      lipgloss.Color("#19181A"), // Consistent Background Fill
 	Text:         lipgloss.Color("#FCFCFA"), // Warm White
 	Subtext:      lipgloss.Color("#939293"), // Neutral Gray
 	Highlight:    lipgloss.Color("#AB9DF2"), // Purple Highlight
@@ -115,7 +115,7 @@ var Cobalt2 = Palette{
 	Error:        lipgloss.Color("#FF2C70"), // Cobalt Pink Red
 	Muted:        lipgloss.Color("#004B87"), // Deep Cobalt Blue Muted
 	Background:   lipgloss.Color("#193549"), // Cobalt2 Navy Background
-	Surface:      lipgloss.Color("#132738"), // Cobalt Dark Surface
+	Surface:      lipgloss.Color("#193549"), // Consistent Background Fill
 	Text:         lipgloss.Color("#FFFFFF"), // Pure White
 	Subtext:      lipgloss.Color("#9EBFD6"), // Soft Blue Gray
 	Highlight:    lipgloss.Color("#005082"), // Cobalt Blue Highlight
@@ -133,7 +133,7 @@ var SolarizedDark = Palette{
 	Error:        lipgloss.Color("#DC322F"), // Solarized Red
 	Muted:        lipgloss.Color("#586E75"), // Base01 Muted
 	Background:   lipgloss.Color("#002B36"), // Base03 Deep Dark Blue
-	Surface:      lipgloss.Color("#073642"), // Base02 Dark Surface
+	Surface:      lipgloss.Color("#002B36"), // Consistent Background Fill
 	Text:         lipgloss.Color("#839496"), // Base0 Text
 	Subtext:      lipgloss.Color("#657B83"), // Base00 Subtext
 	Highlight:    lipgloss.Color("#2AA198"), // Solarized Cyan Highlight

@@ -69,9 +69,10 @@ func (sim *Simulator) seedInitialData() {
 	}
 
 	// Pre-populate BGP Peers
+	startEst := time.Now().Add(-14 * 24 * time.Hour).Add(-2 * time.Hour)
 	sim.state.BGPPeers = []BGPPeerState{
-		{NeighborIP: "10.0.0.1", PeerASN: 65001, LocalASN: 65000, SessionState: "ESTABLISHED", PeerType: "eBGP", Interface: "ethernet-1/1.0", Uptime: "14d 02h", RxPrefixes: 43, TxPrefixes: 13, AddrFamilies: []string{"ipv4-unicast", "evpn"}},
-		{NeighborIP: "10.0.0.3", PeerASN: 65002, LocalASN: 65000, SessionState: "ESTABLISHED", PeerType: "eBGP", Interface: "ethernet-1/2.0", Uptime: "14d 02h", RxPrefixes: 43, TxPrefixes: 55, AddrFamilies: []string{"ipv4-unicast"}},
+		{NeighborIP: "10.0.0.1", PeerASN: 65001, LocalASN: 65000, SessionState: "ESTABLISHED", PeerType: "eBGP", Interface: "ethernet-1/1.0", LastEstablished: startEst, Uptime: FormatUptimeDuration(time.Since(startEst)), RxPrefixes: 43, TxPrefixes: 13, AddrFamilies: []string{"ipv4-unicast", "evpn"}},
+		{NeighborIP: "10.0.0.3", PeerASN: 65002, LocalASN: 65000, SessionState: "ESTABLISHED", PeerType: "eBGP", Interface: "ethernet-1/2.0", LastEstablished: startEst, Uptime: FormatUptimeDuration(time.Since(startEst)), RxPrefixes: 43, TxPrefixes: 55, AddrFamilies: []string{"ipv4-unicast"}},
 		{NeighborIP: "10.0.0.5", PeerASN: 65000, LocalASN: 65000, SessionState: "ACTIVE", PeerType: "iBGP", Interface: "ethernet-1/29.0", Uptime: "-", RxPrefixes: 0, TxPrefixes: 0, AddrFamilies: []string{"ipv4-unicast", "evpn"}},
 	}
 

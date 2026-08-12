@@ -475,6 +475,7 @@ func RenderInspectorModal(m InspectorModal, pal theme.Palette, width, height int
 	searchBar := lipgloss.NewStyle().
 		Border(lipgloss.NormalBorder()).
 		BorderForeground(pal.Primary).
+		Background(pal.Background).
 		Padding(0, 1).
 		Render(fmt.Sprintf("🔍 Filter: %s", m.SearchInput.View()))
 
@@ -485,19 +486,35 @@ func RenderInspectorModal(m InspectorModal, pal theme.Palette, width, height int
 	boxStyle := lipgloss.NewStyle().
 		Border(lipgloss.DoubleBorder()).
 		BorderForeground(pal.Secondary).
-		Background(pal.Surface).
+		BorderBackground(pal.Background).
+		Background(pal.Background).
 		Width(modalWidth).
 		Height(modalHeight).
 		Padding(1, 2)
 
-	inner := fmt.Sprintf("%s\n\n%s\n\n%s\n%s",
+	rawContent := fmt.Sprintf("%s\n\n%s\n\n%s\n%s",
 		titleStyle.Render(m.TargetTitle),
 		contentStr,
 		searchBar,
 		footer,
 	)
 
-	return boxStyle.Render(inner)
+	contentWidth := modalWidth - 4
+	r, g, b, _ := pal.Background.RGBA()
+	bgSeq := fmt.Sprintf("\x1b[48;2;%d;%d;%dm", uint8(r>>8), uint8(g>>8), uint8(b>>8))
+	resetSeq := fmt.Sprintf("\x1b[0m%s", bgSeq)
+
+	var styledLines []string
+	for _, l := range strings.Split(rawContent, "\n") {
+		w := lipgloss.Width(l)
+		if w < contentWidth {
+			l += strings.Repeat(" ", contentWidth-w)
+		}
+		cleaned := strings.ReplaceAll(l, "\x1b[0m", resetSeq)
+		styledLines = append(styledLines, bgSeq+cleaned+"\x1b[0m")
+	}
+
+	return boxStyle.Render(strings.Join(styledLines, "\n"))
 }
 
 func renderSplitPanePortModal(m InspectorModal, pal theme.Palette, modalWidth, modalHeight int) string {
@@ -506,21 +523,23 @@ func renderSplitPanePortModal(m InspectorModal, pal theme.Palette, modalWidth, m
 	// -------------------------------------------------------------
 	// Top Pane: Detailed Port Status Overview
 	// -------------------------------------------------------------
-	labelStyle := lipgloss.NewStyle().Foreground(pal.Subtext).Bold(true)
-	valStyle := lipgloss.NewStyle().Foreground(pal.Text)
-	highlightStyle := lipgloss.NewStyle().Foreground(pal.Primary).Bold(true)
+	labelStyle := lipgloss.NewStyle().Foreground(pal.Subtext).Background(pal.Background).Bold(true)
+	valStyle := lipgloss.NewStyle().Foreground(pal.Text).Background(pal.Background)
+	highlightStyle := lipgloss.NewStyle().Foreground(pal.Primary).Background(pal.Background).Bold(true)
+	sepStyle := lipgloss.NewStyle().Foreground(pal.Primary).Background(pal.Background).Render("  │  ")
+	bgStyle := lipgloss.NewStyle().Background(pal.Background)
 
 	adminUp := strings.ToLower(p.AdminState) == "up" || strings.ToLower(p.AdminState) == "enable"
 	operUp := strings.ToLower(p.OperState) == "up"
 
-	adminBadge := lipgloss.NewStyle().Foreground(pal.Error).Bold(true).Render("[ADMIN DISABLE]")
+	adminBadge := lipgloss.NewStyle().Foreground(pal.Error).Background(pal.Background).Bold(true).Render("[ADMIN DISABLE]")
 	if adminUp {
-		adminBadge = lipgloss.NewStyle().Foreground(pal.Success).Bold(true).Render("[ADMIN ENABLE]")
+		adminBadge = lipgloss.NewStyle().Foreground(pal.Success).Background(pal.Background).Bold(true).Render("[ADMIN ENABLE]")
 	}
 
-	operBadge := lipgloss.NewStyle().Foreground(pal.Error).Bold(true).Render("[OPER DOWN]")
+	operBadge := lipgloss.NewStyle().Foreground(pal.Error).Background(pal.Background).Bold(true).Render("[OPER DOWN]")
 	if operUp {
-		operBadge = lipgloss.NewStyle().Foreground(pal.Success).Bold(true).Render("[OPER UP]")
+		operBadge = lipgloss.NewStyle().Foreground(pal.Success).Background(pal.Background).Bold(true).Render("[OPER UP]")
 	}
 
 	speedVal := p.Speed
@@ -538,47 +557,42 @@ func renderSplitPanePortModal(m InspectorModal, pal theme.Palette, modalWidth, m
 		descVal = "None"
 	}
 
-	rxStr := lipgloss.NewStyle().Foreground(pal.Success).Bold(true).Render(formatBps(p.RxBps))
-	txStr := lipgloss.NewStyle().Foreground(pal.Secondary).Bold(true).Render(formatBps(p.TxBps))
+	rxStr := lipgloss.NewStyle().Foreground(pal.Success).Background(pal.Background).Bold(true).Render(formatBps(p.RxBps))
+	txStr := lipgloss.NewStyle().Foreground(pal.Secondary).Background(pal.Background).Bold(true).Render(formatBps(p.TxBps))
 	utilStr := fmt.Sprintf("%.2f%%", p.UtilPercent)
 	if !operUp || !adminUp {
-		rxStr = lipgloss.NewStyle().Foreground(pal.Muted).Render("0 bps")
-		txStr = lipgloss.NewStyle().Foreground(pal.Muted).Render("0 bps")
+		rxStr = lipgloss.NewStyle().Foreground(pal.Muted).Background(pal.Background).Render("0 bps")
+		txStr = lipgloss.NewStyle().Foreground(pal.Muted).Background(pal.Background).Render("0 bps")
 		utilStr = "0.00%"
 	}
 
-	row1 := fmt.Sprintf("%s %s (%s)  │  %s %s  │  %s %s  │  %s %s",
-		labelStyle.Render("Port:"), highlightStyle.Render(p.Name), p.ShortName,
-		labelStyle.Render("Admin:"), adminBadge,
-		labelStyle.Render("Oper:"), operBadge,
-		labelStyle.Render("Speed:"), valStyle.Render(speedVal),
-	)
+	row1 := bgStyle.Render(" ") + labelStyle.Render("Port:") + bgStyle.Render(" ") + highlightStyle.Render(p.Name) + bgStyle.Render(" ") + valStyle.Render("("+p.ShortName+")") + sepStyle +
+		labelStyle.Render("Admin:") + bgStyle.Render(" ") + adminBadge + sepStyle +
+		labelStyle.Render("Oper:") + bgStyle.Render(" ") + operBadge + sepStyle +
+		labelStyle.Render("Speed:") + bgStyle.Render(" ") + valStyle.Render(speedVal)
 
-	row2 := fmt.Sprintf("%s %s  │  %s %d  │  %s %s  │  %s %s  │  %s %s",
-		labelStyle.Render("MAC:"), valStyle.Render(macVal),
-		labelStyle.Render("MTU:"), p.MTU,
-		labelStyle.Render("Rx Traffic:"), rxStr,
-		labelStyle.Render("Tx Traffic:"), txStr,
-		labelStyle.Render("Util:"), valStyle.Render(utilStr),
-	)
+	row2 := bgStyle.Render(" ") + labelStyle.Render("MAC:") + bgStyle.Render(" ") + valStyle.Render(macVal) + sepStyle +
+		labelStyle.Render("MTU:") + bgStyle.Render(" ") + valStyle.Render(fmt.Sprintf("%d", p.MTU)) + sepStyle +
+		labelStyle.Render("Rx Traffic:") + bgStyle.Render(" ") + rxStr + sepStyle +
+		labelStyle.Render("Tx Traffic:") + bgStyle.Render(" ") + txStr + sepStyle +
+		labelStyle.Render("Util:") + bgStyle.Render(" ") + valStyle.Render(utilStr)
 
-	row3 := fmt.Sprintf("%s %d  │  %s %d  │  %s %s",
-		labelStyle.Render("In-Errors:"), p.Errors,
-		labelStyle.Render("Flaps:"), p.Flaps,
-		labelStyle.Render("Description:"), valStyle.Render(descVal),
-	)
+	row3 := bgStyle.Render(" ") + labelStyle.Render("In-Errors:") + bgStyle.Render(" ") + valStyle.Render(fmt.Sprintf("%d", p.Errors)) + sepStyle +
+		labelStyle.Render("Flaps:") + bgStyle.Render(" ") + valStyle.Render(fmt.Sprintf("%d", p.Flaps)) + sepStyle +
+		labelStyle.Render("Description:") + bgStyle.Render(" ") + valStyle.Render(descVal)
 
 	// Quick action prompt line
 	var actionHint string
 	if adminUp {
-		actionHint = lipgloss.NewStyle().Foreground(pal.Warning).Bold(true).Render("⚡ Admin Controls: Press [a] to Disable Port (Admin Down)  │  Press [/] to Search Filter")
+		actionHint = lipgloss.NewStyle().Foreground(pal.Warning).Background(pal.Background).Bold(true).Render("⚡ Admin Controls: Press [a] to Disable Port (Admin Down)  │  Press [/] to Search Filter")
 	} else {
-		actionHint = lipgloss.NewStyle().Foreground(pal.Success).Bold(true).Render("⚡ Admin Controls: Press [a] to Enable Port (Admin Up)  │  Press [/] to Search Filter")
+		actionHint = lipgloss.NewStyle().Foreground(pal.Success).Background(pal.Background).Bold(true).Render("⚡ Admin Controls: Press [a] to Enable Port (Admin Up)  │  Press [/] to Search Filter")
 	}
 
 	topPaneBox := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(pal.Primary).
+		BorderBackground(pal.Background).
 		Background(pal.Background).
 		Width(modalWidth - 6).
 		Padding(0, 1).
@@ -637,6 +651,7 @@ func renderSplitPanePortModal(m InspectorModal, pal theme.Palette, modalWidth, m
 	searchBar := lipgloss.NewStyle().
 		Border(lipgloss.NormalBorder()).
 		BorderForeground(pal.Primary).
+		Background(pal.Background).
 		Padding(0, 1).
 		Render(fmt.Sprintf("🔍 Filter: %s", m.SearchInput.View()))
 
@@ -652,7 +667,8 @@ func renderSplitPanePortModal(m InspectorModal, pal theme.Palette, modalWidth, m
 	outerBox := lipgloss.NewStyle().
 		Border(lipgloss.DoubleBorder()).
 		BorderForeground(pal.Secondary).
-		Background(pal.Surface).
+		BorderBackground(pal.Background).
+		Background(pal.Background).
 		Width(modalWidth).
 		Height(modalHeight).
 		Padding(1, 2)
@@ -664,7 +680,7 @@ func renderSplitPanePortModal(m InspectorModal, pal theme.Palette, modalWidth, m
 		Padding(0, 1).
 		Render(m.TargetTitle)
 
-	modalContent := fmt.Sprintf("%s\n\n%s\n\n%s\n%s\n\n%s\n%s",
+	rawContent := fmt.Sprintf("%s\n\n%s\n\n%s\n%s\n\n%s\n%s",
 		modalTitle,
 		topPaneBox,
 		bottomHeader,
@@ -673,6 +689,22 @@ func renderSplitPanePortModal(m InspectorModal, pal theme.Palette, modalWidth, m
 		footer,
 	)
 
+	contentWidth := modalWidth - 4
+	r, g, b, _ := pal.Background.RGBA()
+	bgSeq := fmt.Sprintf("\x1b[48;2;%d;%d;%dm", uint8(r>>8), uint8(g>>8), uint8(b>>8))
+	resetSeq := fmt.Sprintf("\x1b[0m%s", bgSeq)
+
+	var styledLines []string
+	for _, l := range strings.Split(rawContent, "\n") {
+		w := lipgloss.Width(l)
+		if w < contentWidth {
+			l += strings.Repeat(" ", contentWidth-w)
+		}
+		cleaned := strings.ReplaceAll(l, "\x1b[0m", resetSeq)
+		styledLines = append(styledLines, bgSeq+cleaned+"\x1b[0m")
+	}
+
+	modalContent := strings.Join(styledLines, "\n")
 	renderedBase := outerBox.Render(modalContent)
 
 	// -------------------------------------------------------------
@@ -727,7 +759,8 @@ func renderAdminConfirmationPrompt(portName, action string, pal theme.Palette, w
 	dialog := lipgloss.NewStyle().
 		Border(lipgloss.DoubleBorder()).
 		BorderForeground(actionColor).
-		Background(pal.Surface).
+		BorderBackground(pal.Background).
+		Background(pal.Background).
 		Width(width).
 		Padding(1, 3).
 		Align(lipgloss.Center).
@@ -737,11 +770,12 @@ func renderAdminConfirmationPrompt(portName, action string, pal theme.Palette, w
 }
 
 func colorizeYAMLLine(line string, pal theme.Palette) string {
-	keyStyle := lipgloss.NewStyle().Foreground(pal.Warning).Bold(true)
-	valStyle := lipgloss.NewStyle().Foreground(pal.Success)
-	bracketStyle := lipgloss.NewStyle().Foreground(pal.Primary)
-	dashStyle := lipgloss.NewStyle().Foreground(pal.Primary).Bold(true)
-	commentStyle := lipgloss.NewStyle().Foreground(pal.Subtext)
+	bgStyle := lipgloss.NewStyle().Background(pal.Background)
+	keyStyle := lipgloss.NewStyle().Foreground(pal.Warning).Background(pal.Background).Bold(true)
+	valStyle := lipgloss.NewStyle().Foreground(pal.Success).Background(pal.Background)
+	bracketStyle := lipgloss.NewStyle().Foreground(pal.Primary).Background(pal.Background)
+	dashStyle := lipgloss.NewStyle().Foreground(pal.Primary).Background(pal.Background).Bold(true)
+	commentStyle := lipgloss.NewStyle().Foreground(pal.Subtext).Background(pal.Background)
 
 	trimmed := strings.TrimSpace(line)
 	if strings.HasPrefix(trimmed, "#") {
@@ -757,7 +791,7 @@ func colorizeYAMLLine(line string, pal theme.Palette) string {
 			dashIdx := strings.Index(prefix, "-")
 			indent := prefix[:dashIdx]
 			restKey := prefix[dashIdx+2:]
-			return indent + dashStyle.Render("- ") + keyStyle.Render(restKey) + bracketStyle.Render(":") + valStyle.Render(suffix)
+			return bgStyle.Render(indent) + dashStyle.Render("- ") + keyStyle.Render(restKey) + bracketStyle.Render(":") + valStyle.Render(suffix)
 		}
 		return keyStyle.Render(prefix) + bracketStyle.Render(":") + valStyle.Render(suffix)
 	}

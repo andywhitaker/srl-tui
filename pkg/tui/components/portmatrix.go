@@ -16,10 +16,12 @@ func RenderPortMatrix(snap *ndk.TelemetryState, selectedIdx int, focused bool, p
 
 	titleStyle := lipgloss.NewStyle().
 		Bold(true).
-		Foreground(pal.Primary)
+		Foreground(pal.Primary).
+		Background(pal.Background)
 
 	subStyle := lipgloss.NewStyle().
-		Foreground(pal.Subtext)
+		Foreground(pal.Subtext).
+		Background(pal.Background)
 
 	numPorts := len(snap.Ports)
 	if numPorts == 0 {
@@ -72,9 +74,10 @@ func RenderPortMatrix(snap *ndk.TelemetryState, selectedIdx int, focused bool, p
 			lastEven = bEnd - 1
 		}
 
-		blockStr := fmt.Sprintf("%s  (ODD: %d..%d)\n%s  (EVEN: %d..%d)",
-			oddRow, firstOdd, lastOdd,
-			evenRow, firstEven, lastEven)
+		lblOdd := lipgloss.NewStyle().Foreground(pal.Subtext).Background(pal.Background).Render(fmt.Sprintf("  (ODD: %d..%d)", firstOdd, lastOdd))
+		lblEven := lipgloss.NewStyle().Foreground(pal.Subtext).Background(pal.Background).Render(fmt.Sprintf("  (EVEN: %d..%d)", firstEven, lastEven))
+
+		blockStr := fmt.Sprintf("%s%s\n%s%s", oddRow, lblOdd, evenRow, lblEven)
 
 		blockStrings = append(blockStrings, blockStr)
 	}
@@ -96,15 +99,16 @@ func RenderPortMatrix(snap *ndk.TelemetryState, selectedIdx int, focused bool, p
 	panelStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(borderColor).
-		Background(pal.Surface).
+		BorderBackground(pal.Background).
+		Background(pal.Background).
 		Width(width - 2).
 		Height(height - 2).
 		Padding(0, 1)
 
-	header := fmt.Sprintf("%s %s",
+	header := lipgloss.NewStyle().Background(pal.Background).Render(fmt.Sprintf("%s %s",
 		titleStyle.Render(fmt.Sprintf("█ FRONT-PANEL PORT MATRIX (%d Physical Ethernet Ports)", numPorts)),
 		subStyle.Render("[Use Arrow Keys/hjkl to navigate | Press ENTER/SPACE for YANG State]"),
-	)
+	))
 
 	return panelStyle.Render(header + "\n\n" + gridStr + "\n\n" + inspectorStr)
 }
@@ -112,10 +116,8 @@ func RenderPortMatrix(snap *ndk.TelemetryState, selectedIdx int, focused bool, p
 func renderPortCell(p ndk.PortState, isSelected bool, pal theme.Palette) string {
 	numLabel := fmt.Sprintf("%02d", p.Index+1)
 
-	var style lipgloss.Style
-
 	if isSelected {
-		style = lipgloss.NewStyle().
+		style := lipgloss.NewStyle().
 			Bold(true).
 			Foreground(pal.Background).
 			Background(pal.Primary).
@@ -126,44 +128,38 @@ func renderPortCell(p ndk.PortState, isSelected bool, pal theme.Palette) string 
 	adminUp := strings.ToLower(p.AdminState) == "up"
 	operUp := strings.ToLower(p.OperState) == "up"
 
+	style := lipgloss.NewStyle().Background(pal.Background)
+
 	if !adminUp {
 		// When admin-state is down: grey color (pal.Muted)
-		style = lipgloss.NewStyle().
-			Foreground(pal.Muted).
-			Background(pal.Background)
+		style = style.Foreground(pal.Muted)
 	} else if operUp {
 		// When admin-state is up and oper-state is up: green (pal.Success)
-		style = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(pal.Success).
-			Background(pal.Background)
+		style = style.Bold(true).Foreground(pal.Success)
 	} else {
 		// When admin-state is up and oper-state is down: red (pal.Error)
-		style = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(pal.Error).
-			Background(pal.Background)
+		style = style.Bold(true).Foreground(pal.Error)
 	}
 
 	return style.Render(fmt.Sprintf("[%s]", numLabel))
 }
 
 func renderPortInspector(p ndk.PortState, pal theme.Palette, width int) string {
-	labelStyle := lipgloss.NewStyle().Foreground(pal.Subtext).Bold(true)
-	valStyle := lipgloss.NewStyle().Foreground(pal.Text)
-	highlightStyle := lipgloss.NewStyle().Foreground(pal.Primary).Bold(true)
+	lbl := lipgloss.NewStyle().Foreground(pal.Subtext).Background(pal.Background).Bold(true)
+	val := lipgloss.NewStyle().Foreground(pal.Text).Background(pal.Background)
+	hl := lipgloss.NewStyle().Foreground(pal.Primary).Background(pal.Background).Bold(true)
 
-	statusStr := lipgloss.NewStyle().Foreground(pal.Error).Render("DOWN")
+	statusStr := lipgloss.NewStyle().Foreground(pal.Error).Background(pal.Background).Bold(true).Render(padRight("DOWN", 6))
 	if p.OperState == "up" {
-		statusStr = lipgloss.NewStyle().Foreground(pal.Success).Render("UP")
+		statusStr = lipgloss.NewStyle().Foreground(pal.Success).Background(pal.Background).Bold(true).Render(padRight("UP", 6))
 	}
 
-	rxFormatted := lipgloss.NewStyle().Foreground(pal.Success).Bold(true).Render(formatBps(p.RxBps))
-	txFormatted := lipgloss.NewStyle().Foreground(pal.Secondary).Bold(true).Render(formatBps(p.TxBps))
+	rxFormatted := lipgloss.NewStyle().Foreground(pal.Success).Background(pal.Background).Bold(true).Render(padRight(formatBps(p.RxBps), 12))
+	txFormatted := lipgloss.NewStyle().Foreground(pal.Secondary).Background(pal.Background).Bold(true).Render(padRight(formatBps(p.TxBps), 12))
 	utilFormatted := fmt.Sprintf("%.2f%%", p.UtilPercent)
 	if p.OperState != "up" || p.AdminState == "down" {
-		rxFormatted = lipgloss.NewStyle().Foreground(pal.Muted).Render("0 bps")
-		txFormatted = lipgloss.NewStyle().Foreground(pal.Muted).Render("0 bps")
+		rxFormatted = lipgloss.NewStyle().Foreground(pal.Muted).Background(pal.Background).Render(padRight("0 bps", 12))
+		txFormatted = lipgloss.NewStyle().Foreground(pal.Muted).Background(pal.Background).Render(padRight("0 bps", 12))
 		utilFormatted = "0.00%"
 	}
 
@@ -172,33 +168,40 @@ func renderPortInspector(p ndk.PortState, pal theme.Palette, width int) string {
 		desc = "N/A"
 	}
 
-	col1 := fmt.Sprintf("%s %s  %s %s  %s %s",
-		labelStyle.Render("Port:"), highlightStyle.Render(p.Name),
-		labelStyle.Render("State:"), statusStr,
-		labelStyle.Render("Speed:"), valStyle.Render(p.Speed),
+	c1 := lipgloss.JoinHorizontal(lipgloss.Top,
+		lbl.Render("Port: "), hl.Render(padRight(p.Name, 16)),
+		lbl.Render("State: "), statusStr,
+		lbl.Render("Speed: "), val.Render(p.Speed),
 	)
 
-	col2 := fmt.Sprintf("%s %s  %s %s  %s %s  %s %d",
-		labelStyle.Render("Rx Traffic:"), rxFormatted,
-		labelStyle.Render("Tx Traffic:"), txFormatted,
-		labelStyle.Render("Util:"), valStyle.Render(utilFormatted),
-		labelStyle.Render("MTU:"), p.MTU,
+	c2 := lipgloss.JoinHorizontal(lipgloss.Top,
+		lbl.Render("Rx Traffic: "), rxFormatted,
+		lbl.Render("Tx Traffic: "), txFormatted,
+		lbl.Render("Util: "), val.Render(padRight(utilFormatted, 8)),
+		lbl.Render("MTU: "), val.Render(fmt.Sprintf("%d", p.MTU)),
 	)
 
-	col3 := fmt.Sprintf("%s %s  %s %d  %s %d",
-		labelStyle.Render("Desc:"), valStyle.Render(desc),
-		labelStyle.Render("Flaps:"), p.Flaps,
-		labelStyle.Render("Errors:"), p.Errors,
+	c3 := lipgloss.JoinHorizontal(lipgloss.Top,
+		lbl.Render("Desc: "), val.Render(padRight(desc, 24)),
+		lbl.Render("Flaps: "), val.Render(padRight(fmt.Sprintf("%d", p.Flaps), 6)),
+		lbl.Render("Errors: "), val.Render(fmt.Sprintf("%d", p.Errors)),
 	)
 
 	boxStyle := lipgloss.NewStyle().
 		Border(lipgloss.NormalBorder()).
 		BorderForeground(pal.Muted).
+		BorderBackground(pal.Background).
 		Background(pal.Background).
 		Width(width).
 		Padding(0, 1)
 
-	return boxStyle.Render(col1 + "\n" + col2 + "\n" + col3)
+	rawContent := c1 + "\n" + c2 + "\n" + c3
+	var styledLines []string
+	bgStyle := lipgloss.NewStyle().Background(pal.Background)
+	for _, l := range strings.Split(rawContent, "\n") {
+		styledLines = append(styledLines, bgStyle.Render(l))
+	}
+	return boxStyle.Render(strings.Join(styledLines, "\n"))
 }
 
 func formatBps(bps float64) string {

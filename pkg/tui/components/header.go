@@ -20,28 +20,33 @@ func RenderHeader(snap *ndk.TelemetryState, pal theme.Palette, width int) string
 
 	heartbeatStyle := lipgloss.NewStyle().
 		Bold(true).
-		Foreground(pal.Secondary)
+		Foreground(pal.Secondary).
+		Background(pal.Background)
 
 	titleStyle := lipgloss.NewStyle().
 		Bold(true).
 		Foreground(pal.Primary).
-		Background(pal.Surface).
+		Background(pal.Background).
 		Padding(0, 1)
 
 	subtitleStyle := lipgloss.NewStyle().
-		Foreground(pal.Subtext)
+		Foreground(pal.Subtext).
+		Background(pal.Background)
 
 	statusConnectedStyle := lipgloss.NewStyle().
 		Bold(true).
-		Foreground(pal.Success)
+		Foreground(pal.Success).
+		Background(pal.Background)
 
 	statusSyncingStyle := lipgloss.NewStyle().
 		Bold(true).
-		Foreground(pal.Warning)
+		Foreground(pal.Warning).
+		Background(pal.Background)
 
 	statusDisconnectedStyle := lipgloss.NewStyle().
 		Bold(true).
-		Foreground(pal.Error)
+		Foreground(pal.Error).
+		Background(pal.Background)
 
 	// Animated spinner characters for sync state
 	spinners := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
@@ -89,32 +94,33 @@ func RenderHeader(snap *ndk.TelemetryState, pal theme.Palette, width int) string
 	nokiaBadge := lipgloss.NewStyle().
 		Bold(true).
 		Foreground(lipgloss.Color("#00F5FF")).
-		Background(pal.Surface).
+		Background(pal.Background).
 		Padding(0, 1).
 		Render("NOKIA")
 
-	line1 := fmt.Sprintf("%s %s %s %s  %s  %s",
+	line1 := lipgloss.NewStyle().Background(pal.Background).Render(fmt.Sprintf("%s %s %s %s  %s  %s",
 		nokiaBadge,
 		titleStyle.Render("⚡ SRL-NDK CYBER-DASHBOARD v1.0"),
 		heartbeatStyle.Render(heartbeat),
 		subtitleStyle.Render(fmt.Sprintf("[%s | %s]", snap.Hostname, snap.Platform)),
 		connStatus,
 		themeBadge,
-	)
+	))
 
-	line2 := fmt.Sprintf("%s | Uptime: %s | Events: %d (%.0f/s) | %s  %s",
+	line2 := lipgloss.NewStyle().Background(pal.Background).Render(fmt.Sprintf("%s | Uptime: %s | Events: %d (%.0f/s) | %s  %s",
 		subtitleStyle.Render("SR Linux "+snap.OSVersion),
 		uptimeStr,
 		snap.EventCount,
 		snap.EventsPerSec,
 		cpuGauge,
 		ramGauge,
-	)
+	))
 
 	boxStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(pal.Primary).
-		Background(pal.Surface).
+		BorderBackground(pal.Background).
+		Background(pal.Background).
 		Width(width - 2).
 		Padding(0, 1)
 

@@ -62,6 +62,20 @@ func (c *NDKClient) Start(ctx context.Context) error {
 	c.scanSystemStats()
 	c.scanLocalInterfaces()
 
+	// Launch background 1-second System Stats & Ticker Loop
+	go func() {
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				c.scanSystemStats()
+			}
+		}
+	}()
+
 	// Launch 100% Native Event-Driven gNMI & NDK Streams
 	go c.supervisorLoop(ctx)
 	go c.gnmiStreamLoop(ctx)
@@ -69,10 +83,85 @@ func (c *NDKClient) Start(ctx context.Context) error {
 	return nil
 }
 
+var (
+	lastProcTotal uint64
+	lastProcIdle  uint64
+)
+
 func (c *NDKClient) scanSystemStats() {
 	c.state.Lock()
 	defer c.state.Unlock()
-	c.state.Uptime = time.Since(c.state.StartTime)
+
+	c.state.TickCount++
+	if !c.state.StartTime.IsZero() {
+		c.state.Uptime = time.Since(c.state.StartTime)
+	}
+
+	// 1. Read RAM utilization from /proc/meminfo
+	if data, err := os.ReadFile("/proc/meminfo"); err == nil {
+		lines := strings.Split(string(data), "\n")
+		var totalMem, availMem float64
+		for _, line := range lines {
+			if strings.HasPrefix(line, "MemTotal:") {
+				fields := strings.Fields(line)
+				if len(fields) >= 2 {
+					fmt.Sscanf(fields[1], "%f", &totalMem)
+				}
+			} else if strings.HasPrefix(line, "MemAvailable:") {
+				fields := strings.Fields(line)
+				if len(fields) >= 2 {
+					fmt.Sscanf(fields[1], "%f", &availMem)
+				}
+			}
+		}
+		if totalMem > 0 && availMem > 0 {
+			usedMem := totalMem - availMem
+			ramPct := (usedMem / totalMem) * 100.0
+			c.state.RAMUsage = math.Min(100.0, math.Max(0.0, ramPct))
+		}
+	}
+
+	// 2. Read CPU utilization from /proc/stat
+	if data, err := os.ReadFile("/proc/stat"); err == nil {
+		lines := strings.Split(string(data), "\n")
+		for _, line := range lines {
+			if strings.HasPrefix(line, "cpu ") {
+				fields := strings.Fields(line)
+				if len(fields) >= 5 {
+					var user, nice, sys, idle, iowait, irq, softirq, steal uint64
+					fmt.Sscanf(fields[1], "%d", &user)
+					fmt.Sscanf(fields[2], "%d", &nice)
+					fmt.Sscanf(fields[3], "%d", &sys)
+					fmt.Sscanf(fields[4], "%d", &idle)
+					if len(fields) >= 6 {
+						fmt.Sscanf(fields[5], "%d", &iowait)
+					}
+					if len(fields) >= 7 {
+						fmt.Sscanf(fields[6], "%d", &irq)
+					}
+					if len(fields) >= 8 {
+						fmt.Sscanf(fields[7], "%d", &softirq)
+					}
+					if len(fields) >= 9 {
+						fmt.Sscanf(fields[8], "%d", &steal)
+					}
+
+					total := user + nice + sys + idle + iowait + irq + softirq + steal
+					idleTotal := idle + iowait
+
+					if lastProcTotal > 0 && total > lastProcTotal {
+						totalDiff := float64(total - lastProcTotal)
+						idleDiff := float64(idleTotal - lastProcIdle)
+						cpuPct := (1.0 - (idleDiff / totalDiff)) * 100.0
+						c.state.CPUUsage = math.Min(100.0, math.Max(0.0, cpuPct))
+					}
+					lastProcTotal = total
+					lastProcIdle = idleTotal
+				}
+				break
+			}
+		}
+	}
 }
 
 func (c *NDKClient) scanLocalInterfaces() {
@@ -850,23 +939,21 @@ func (c *NDKClient) parseGNMIStreamNotification(notif *pb.Notification) {
 					peer.SessionState = strings.ToUpper(stateStr)
 				}
 
-				// Uptime Calculation: calculate established uptime or set "-" when down (never "established")
+				// Uptime Calculation: store LastEstablished timestamp and compute Uptime
 				if peer.SessionState == "ESTABLISHED" {
 					if lastEst != "" {
 						if t, err := time.Parse(time.RFC3339, lastEst); err == nil {
-							dur := time.Since(t)
-							if dur < time.Minute {
-								peer.Uptime = fmt.Sprintf("%ds", int(dur.Seconds()))
-							} else if dur < time.Hour {
-								peer.Uptime = fmt.Sprintf("%dm%02ds", int(dur.Minutes()), int(dur.Seconds())%60)
-							} else {
-								peer.Uptime = fmt.Sprintf("%dh%02dm", int(dur.Hours()), int(dur.Minutes())%60)
-							}
+							peer.LastEstablished = t
+							peer.Uptime = FormatUptimeDuration(time.Since(t))
 						}
-					} else if peer.Uptime == "" || peer.Uptime == "established" {
+					} else if peer.LastEstablished.IsZero() {
+						peer.LastEstablished = time.Now()
 						peer.Uptime = "0s"
+					} else {
+						peer.Uptime = FormatUptimeDuration(time.Since(peer.LastEstablished))
 					}
 				} else {
+					peer.LastEstablished = time.Time{}
 					peer.Uptime = "-"
 				}
 
@@ -1320,6 +1407,14 @@ func (c *NDKClient) parseGNMIStreamNotification(notif *pb.Notification) {
 				c.state.Lock()
 				c.state.OSVersion = ver
 				c.state.Unlock()
+			}
+			if lastBooted, ok := dataMap["last-booted"].(string); ok && lastBooted != "" {
+				if t, err := time.Parse(time.RFC3339, lastBooted); err == nil {
+					c.state.Lock()
+					c.state.StartTime = t
+					c.state.Uptime = time.Since(t)
+					c.state.Unlock()
+				}
 			}
 			if desc, ok := dataMap["description"].(string); ok && desc != "" {
 				if strings.Contains(desc, "7220 IXR-") {

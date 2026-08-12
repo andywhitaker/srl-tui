@@ -118,7 +118,8 @@ func RenderBrailleChart(snap *ndk.TelemetryState, focused bool, pal theme.Palett
 	panelStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(borderColor).
-		Background(pal.Surface).
+		BorderBackground(pal.Background).
+		Background(pal.Background).
 		Width(width - 2).
 		Height(height - 2).
 		Padding(0, 1)

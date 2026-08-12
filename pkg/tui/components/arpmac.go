@@ -118,39 +118,42 @@ func (v *ARPMACView) renderARPTable(entries []ndk.ARPEntry, width, height int, t
 		Width(width).
 		Height(height).
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(borderColor)
+		BorderForeground(borderColor).
+		BorderBackground(th.Background).
+		Background(th.Background)
 
 	headerStyle := lipgloss.NewStyle().
 		Bold(true).
-		Foreground(titleColor)
+		Foreground(titleColor).
+		Background(th.Background)
 
 	hdrStr := headerStyle.Render(" 🔍 ARP NEIGHBOR TABLE ")
 	if active && searchActive {
-		hdrStr += lipgloss.NewStyle().Foreground(th.Warning).Bold(true).Render(fmt.Sprintf(" [SEARCH: %s]", searchInputView))
+		hdrStr += lipgloss.NewStyle().Foreground(th.Warning).Background(th.Background).Bold(true).Render(fmt.Sprintf(" [SEARCH: %s]", searchInputView))
 	} else if active {
-		hdrStr += lipgloss.NewStyle().Foreground(th.Success).Render(" [ACTIVE PANE - Space to Switch, / to Search] ")
+		hdrStr += lipgloss.NewStyle().Foreground(th.Success).Background(th.Background).Render(" [ACTIVE PANE - Space to Switch, / to Search] ")
 	} else {
-		hdrStr += lipgloss.NewStyle().Foreground(th.Muted).Render(" [Space to Focus] ")
+		hdrStr += lipgloss.NewStyle().Foreground(th.Muted).Background(th.Background).Render(" [Space to Focus] ")
 	}
 
 	if searchQuery != "" && !searchActive {
-		hdrStr += lipgloss.NewStyle().Foreground(th.Secondary).Render(fmt.Sprintf(" (Filter: '%s')", searchQuery))
+		hdrStr += lipgloss.NewStyle().Foreground(th.Secondary).Background(th.Background).Render(fmt.Sprintf(" (Filter: '%s')", searchQuery))
 	}
 
-	// Exact Column Widths: IP (18), MAC (20), INTF (20), NETINST (14), TYPE (10)
-	hdrTxt := fmt.Sprintf(" %s %s %s %s %s",
-		padRight("IP ADDRESS", 18),
-		padRight("MAC ADDRESS", 20),
-		padRight("INTERFACE", 20),
-		padRight("NET INSTANCE", 14),
+	// Exact Column Widths: IP (19), MAC (21), INTF (21), NETINST (15), TYPE (10)
+	hdrTxt := fmt.Sprintf(" %s%s%s%s%s",
+		padRight("IP ADDRESS", 19),
+		padRight("MAC ADDRESS", 21),
+		padRight("INTERFACE", 21),
+		padRight("NET INSTANCE", 15),
 		padRight("TYPE", 10),
 	)
-	colHdrs := lipgloss.NewStyle().Bold(true).Foreground(th.Primary).Render(hdrTxt)
+	colHdrs := lipgloss.NewStyle().Bold(true).Foreground(th.Primary).Background(th.Background).Render(hdrTxt)
 
 	var rows []string
 	rows = append(rows, hdrStr)
 	rows = append(rows, colHdrs)
-	rows = append(rows, lipgloss.NewStyle().Foreground(th.Muted).Render(" "+strings.Repeat("─", width-4)))
+	rows = append(rows, lipgloss.NewStyle().Foreground(th.Muted).Background(th.Background).Render(" "+strings.Repeat("─", width-4)))
 
 	maxVisible := height - 4
 	if maxVisible < 1 {
@@ -158,7 +161,7 @@ func (v *ARPMACView) renderARPTable(entries []ndk.ARPEntry, width, height int, t
 	}
 
 	if len(entries) == 0 {
-		rows = append(rows, lipgloss.NewStyle().Foreground(th.Muted).Render("  No matching ARP neighbor entries discovered."))
+		rows = append(rows, lipgloss.NewStyle().Foreground(th.Muted).Background(th.Background).Render("  No matching ARP neighbor entries discovered."))
 	} else {
 		if v.ARPScroll >= len(entries) {
 			v.ARPScroll = len(entries) - 1
@@ -174,19 +177,19 @@ func (v *ARPMACView) renderARPTable(entries []ndk.ARPEntry, width, height int, t
 
 		for i := v.ARPScroll; i < end; i++ {
 			e := entries[i]
-			sIP := padRight(e.IPAddress, 18)
-			sMAC := padRight(e.MACAddress, 20)
-			sIntf := padRight(e.Interface, 20)
-			sNet := padRight(e.NetInst, 14)
+			sIP := padRight(e.IPAddress, 19)
+			sMAC := padRight(e.MACAddress, 21)
+			sIntf := padRight(e.Interface, 21)
+			sNet := padRight(e.NetInst, 15)
 			sType := padRight(e.EntryType, 10)
 
-			cIP := lipgloss.NewStyle().Foreground(th.Text).Render(sIP)
-			cMAC := lipgloss.NewStyle().Foreground(th.Secondary).Render(sMAC)
-			cIntf := lipgloss.NewStyle().Foreground(th.Warning).Render(sIntf)
-			cNet := lipgloss.NewStyle().Foreground(th.Subtext).Render(sNet)
-			cType := lipgloss.NewStyle().Foreground(th.Success).Render(sType)
+			cIP := lipgloss.NewStyle().Foreground(th.Text).Background(th.Background).Render(sIP)
+			cMAC := lipgloss.NewStyle().Foreground(th.Secondary).Background(th.Background).Render(sMAC)
+			cIntf := lipgloss.NewStyle().Foreground(th.Warning).Background(th.Background).Render(sIntf)
+			cNet := lipgloss.NewStyle().Foreground(th.Subtext).Background(th.Background).Render(sNet)
+			cType := lipgloss.NewStyle().Foreground(th.Success).Background(th.Background).Render(sType)
 
-			rows = append(rows, fmt.Sprintf(" %s %s %s %s %s", cIP, cMAC, cIntf, cNet, cType))
+			rows = append(rows, lipgloss.NewStyle().Background(th.Background).Render(fmt.Sprintf(" %s%s%s%s%s", cIP, cMAC, cIntf, cNet, cType)))
 		}
 	}
 
@@ -205,38 +208,41 @@ func (v *ARPMACView) renderMACTable(entries []ndk.MACTableEntry, width, height i
 		Width(width).
 		Height(height).
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(borderColor)
+		BorderForeground(borderColor).
+		BorderBackground(th.Background).
+		Background(th.Background)
 
 	headerStyle := lipgloss.NewStyle().
 		Bold(true).
-		Foreground(titleColor)
+		Foreground(titleColor).
+		Background(th.Background)
 
 	hdrStr := headerStyle.Render(" 🏷️ MAC ADDRESS TABLE ")
 	if active && searchActive {
-		hdrStr += lipgloss.NewStyle().Foreground(th.Warning).Bold(true).Render(fmt.Sprintf(" [SEARCH: %s]", searchInputView))
+		hdrStr += lipgloss.NewStyle().Foreground(th.Warning).Background(th.Background).Bold(true).Render(fmt.Sprintf(" [SEARCH: %s]", searchInputView))
 	} else if active {
-		hdrStr += lipgloss.NewStyle().Foreground(th.Success).Render(" [ACTIVE PANE - Space to Switch, / to Search] ")
+		hdrStr += lipgloss.NewStyle().Foreground(th.Success).Background(th.Background).Render(" [ACTIVE PANE - Space to Switch, / to Search] ")
 	} else {
-		hdrStr += lipgloss.NewStyle().Foreground(th.Muted).Render(" [Space to Focus] ")
+		hdrStr += lipgloss.NewStyle().Foreground(th.Muted).Background(th.Background).Render(" [Space to Focus] ")
 	}
 
 	if searchQuery != "" && !searchActive {
-		hdrStr += lipgloss.NewStyle().Foreground(th.Secondary).Render(fmt.Sprintf(" (Filter: '%s')", searchQuery))
+		hdrStr += lipgloss.NewStyle().Foreground(th.Secondary).Background(th.Background).Render(fmt.Sprintf(" (Filter: '%s')", searchQuery))
 	}
 
-	// Exact Column Widths: MAC (20), NETINST (14), DEST / VTEP (32), TYPE (10)
-	hdrTxt := fmt.Sprintf(" %s %s %s %s",
-		padRight("MAC ADDRESS", 20),
-		padRight("NET INSTANCE", 14),
-		padRight("DESTINATION / VTEP (IP:VNI)", 32),
+	// Exact Column Widths: MAC (21), NETINST (15), DEST / VTEP (33), TYPE (10)
+	hdrTxt := fmt.Sprintf(" %s%s%s%s",
+		padRight("MAC ADDRESS", 21),
+		padRight("NET INSTANCE", 15),
+		padRight("DESTINATION / VTEP (IP:VNI)", 33),
 		padRight("TYPE", 10),
 	)
-	colHdrs := lipgloss.NewStyle().Bold(true).Foreground(th.Primary).Render(hdrTxt)
+	colHdrs := lipgloss.NewStyle().Bold(true).Foreground(th.Primary).Background(th.Background).Render(hdrTxt)
 
 	var rows []string
 	rows = append(rows, hdrStr)
 	rows = append(rows, colHdrs)
-	rows = append(rows, lipgloss.NewStyle().Foreground(th.Muted).Render(" "+strings.Repeat("─", width-4)))
+	rows = append(rows, lipgloss.NewStyle().Foreground(th.Muted).Background(th.Background).Render(" "+strings.Repeat("─", width-4)))
 
 	maxVisible := height - 4
 	if maxVisible < 1 {
@@ -244,7 +250,7 @@ func (v *ARPMACView) renderMACTable(entries []ndk.MACTableEntry, width, height i
 	}
 
 	if len(entries) == 0 {
-		rows = append(rows, lipgloss.NewStyle().Foreground(th.Muted).Render("  No matching MAC address table entries learned."))
+		rows = append(rows, lipgloss.NewStyle().Foreground(th.Muted).Background(th.Background).Render("  No matching MAC address table entries learned."))
 	} else {
 		if v.MACScroll >= len(entries) {
 			v.MACScroll = len(entries) - 1
@@ -265,17 +271,17 @@ func (v *ARPMACView) renderMACTable(entries []ndk.MACTableEntry, width, height i
 				destDisplay = fmt.Sprintf("%s (%s)", e.Interface, e.VTEP)
 			}
 
-			sMAC := padRight(e.MACAddress, 20)
-			sNet := padRight(e.NetInst, 14)
-			sIntf := padRight(destDisplay, 32)
+			sMAC := padRight(e.MACAddress, 21)
+			sNet := padRight(e.NetInst, 15)
+			sIntf := padRight(destDisplay, 33)
 			sType := padRight(e.Type, 10)
 
-			cMAC := lipgloss.NewStyle().Foreground(th.Secondary).Bold(true).Render(sMAC)
-			cNet := lipgloss.NewStyle().Foreground(th.Subtext).Render(sNet)
-			cIntf := lipgloss.NewStyle().Foreground(th.Warning).Render(sIntf)
-			cType := lipgloss.NewStyle().Foreground(th.Success).Render(sType)
+			cMAC := lipgloss.NewStyle().Foreground(th.Secondary).Background(th.Background).Bold(true).Render(sMAC)
+			cNet := lipgloss.NewStyle().Foreground(th.Subtext).Background(th.Background).Render(sNet)
+			cIntf := lipgloss.NewStyle().Foreground(th.Warning).Background(th.Background).Render(sIntf)
+			cType := lipgloss.NewStyle().Foreground(th.Success).Background(th.Background).Render(sType)
 
-			rows = append(rows, fmt.Sprintf(" %s %s %s %s", cMAC, cNet, cIntf, cType))
+			rows = append(rows, lipgloss.NewStyle().Background(th.Background).Render(fmt.Sprintf(" %s%s%s%s", cMAC, cNet, cIntf, cType)))
 		}
 	}
 

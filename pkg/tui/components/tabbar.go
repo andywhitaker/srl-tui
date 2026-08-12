@@ -51,16 +51,16 @@ func RenderTabBar(activeTab TabID, pal theme.Palette, width int) string {
 		} else {
 			style := lipgloss.NewStyle().
 				Foreground(pal.Subtext).
-				Background(pal.Surface).
+				Background(pal.Background).
 				Padding(0, 1)
 			renderedTabs = append(renderedTabs, style.Render(label))
 		}
 	}
 
-	tabBarStr := strings.Join(renderedTabs, " ")
+	tabBarStr := lipgloss.NewStyle().Background(pal.Background).Render(strings.Join(renderedTabs, " "))
 
 	boxStyle := lipgloss.NewStyle().
-		Background(pal.Surface).
+		Background(pal.Background).
 		Width(width - 2).
 		Padding(0, 1)
 

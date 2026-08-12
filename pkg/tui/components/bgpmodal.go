@@ -26,7 +26,7 @@ func RenderBGPDetailModal(entry ndk.BGPPeerState, pal theme.Palette, width, heig
 		headerStr = lipgloss.NewStyle().
 			Bold(true).
 			Foreground(pal.Warning).
-			Background(pal.Surface).
+			Background(pal.Background).
 			Align(lipgloss.Center).
 			Width(modalWidth - 4).
 			Render(checkeredBar)
@@ -77,26 +77,41 @@ func RenderBGPDetailModal(entry ndk.BGPPeerState, pal theme.Palette, width, heig
 	}
 	pfxSummaryStr += fmt.Sprintf(" (Total: %d rx / %d tx)", entry.RxPrefixes, entry.TxPrefixes)
 
+	fmtRow := func(lbl string, val string) string {
+		l := lipgloss.NewStyle().Foreground(pal.Subtext).Background(pal.Background).Render(padRight(lbl, 20))
+		gap := lipgloss.NewStyle().Foreground(pal.Muted).Background(pal.Background).Render(" : ")
+		v := lipgloss.NewStyle().Background(pal.Background).Render(val)
+		return lipgloss.NewStyle().Background(pal.Background).Render("  " + l + gap + v)
+	}
+
 	infoRows := []string{
-		fmt.Sprintf("  %-20s %s", lipgloss.NewStyle().Foreground(pal.Subtext).Render("Neighbor IP:"), lipgloss.NewStyle().Bold(true).Foreground(pal.Text).Render(entry.NeighborIP)),
-		fmt.Sprintf("  %-20s %s", lipgloss.NewStyle().Foreground(pal.Subtext).Render("Peer ASN:"), lipgloss.NewStyle().Foreground(pal.Secondary).Render(fmt.Sprintf("AS%d", entry.PeerASN))),
-		fmt.Sprintf("  %-20s %s", lipgloss.NewStyle().Foreground(pal.Subtext).Render("Local ASN:"), lipgloss.NewStyle().Foreground(pal.Secondary).Render(fmt.Sprintf("AS%d", entry.LocalASN))),
-		fmt.Sprintf("  %-20s %s", lipgloss.NewStyle().Foreground(pal.Subtext).Render("Peer Type:"), lipgloss.NewStyle().Foreground(pal.Primary).Render(entry.PeerType)),
-		fmt.Sprintf("  %-20s %s", lipgloss.NewStyle().Foreground(pal.Subtext).Render("Session State:"), stateStyle.Render(stateUpper)),
-		fmt.Sprintf("  %-20s %s", lipgloss.NewStyle().Foreground(pal.Subtext).Render("Local Interface:"), lipgloss.NewStyle().Foreground(pal.Warning).Render(entry.Interface)),
-		fmt.Sprintf("  %-20s %s", lipgloss.NewStyle().Foreground(pal.Subtext).Render("Uptime:"), lipgloss.NewStyle().Foreground(pal.Text).Render(entry.Uptime)),
-		fmt.Sprintf("  %-20s %s", lipgloss.NewStyle().Foreground(pal.Subtext).Render("Active AFs:"), lipgloss.NewStyle().Foreground(pal.Primary).Render(afListStr)),
-		fmt.Sprintf("  %-20s %s", lipgloss.NewStyle().Foreground(pal.Subtext).Render("Prefixes (Rx/Tx):"), pfxSummaryStr),
-		fmt.Sprintf("  %-20s %s", lipgloss.NewStyle().Foreground(pal.Subtext).Render("Maintenance Group:"), lipgloss.NewStyle().Foreground(pal.Text).Render(grpName)),
-		fmt.Sprintf("  %-20s %s", lipgloss.NewStyle().Foreground(pal.Subtext).Render("Maintenance Status:"), maintStyle.Render(maintText)),
+		fmtRow("Neighbor IP", lipgloss.NewStyle().Bold(true).Foreground(pal.Text).Background(pal.Background).Render(entry.NeighborIP)),
+		fmtRow("Peer ASN", lipgloss.NewStyle().Foreground(pal.Secondary).Background(pal.Background).Render(fmt.Sprintf("AS%d", entry.PeerASN))),
+		fmtRow("Local ASN", lipgloss.NewStyle().Foreground(pal.Secondary).Background(pal.Background).Render(fmt.Sprintf("AS%d", entry.LocalASN))),
+		fmtRow("Peer Type", lipgloss.NewStyle().Foreground(pal.Primary).Background(pal.Background).Render(entry.PeerType)),
+		fmtRow("Session State", stateStyle.Background(pal.Background).Render(stateUpper)),
+		fmtRow("Local Interface", lipgloss.NewStyle().Foreground(pal.Warning).Background(pal.Background).Render(entry.Interface)),
+		fmtRow("Uptime", lipgloss.NewStyle().Foreground(pal.Text).Background(pal.Background).Render(entry.Uptime)),
+		fmtRow("Active AFs", lipgloss.NewStyle().Foreground(pal.Primary).Background(pal.Background).Render(afListStr)),
+		fmtRow("Prefixes (Rx/Tx)", lipgloss.NewStyle().Foreground(pal.Text).Background(pal.Background).Render(pfxSummaryStr)),
+		fmtRow("Maintenance Group", lipgloss.NewStyle().Foreground(pal.Text).Background(pal.Background).Render(grpName)),
+		fmtRow("Maintenance Status", maintStyle.Background(pal.Background).Render(maintText)),
 	}
 
 	infoBox := lipgloss.JoinVertical(lipgloss.Left, infoRows...)
 
 	// 3. Active Address Families Detail Section
-	afHdr := lipgloss.NewStyle().Bold(true).Foreground(pal.Primary).Render("  ACTIVE ADDRESS FAMILIES & ROUTE STATS:")
-	afTableHdrs := fmt.Sprintf("    %-20s %-16s %-16s", "ADDRESS FAMILY", "RECEIVED ROUTES", "SENT ROUTES")
-	afDivider := "    ──────────────────── ──────────────── ────────────────"
+	afHdr := lipgloss.NewStyle().Bold(true).Foreground(pal.Primary).Background(pal.Background).Render("  ACTIVE ADDRESS FAMILIES & ROUTE STATS:")
+	afTableHdrs := lipgloss.NewStyle().Bold(true).Foreground(pal.Subtext).Background(pal.Background).Render(fmt.Sprintf("    %-20s %-16s %-16s", "ADDRESS FAMILY", "RECEIVED ROUTES", "SENT ROUTES"))
+	afDivider := lipgloss.NewStyle().Foreground(pal.Muted).Background(pal.Background).Render("    ──────────────────── ──────────────── ────────────────")
+
+	fmtAfRow := func(af string, rx, tx uint32) string {
+		c1 := lipgloss.NewStyle().Foreground(pal.Text).Background(pal.Background).Render(padRight(af, 20))
+		c2 := lipgloss.NewStyle().Foreground(pal.Success).Background(pal.Background).Render(padRight(fmt.Sprintf("%d", rx), 16))
+		c3 := lipgloss.NewStyle().Foreground(pal.Secondary).Background(pal.Background).Render(fmt.Sprintf("%d", tx))
+		gap := lipgloss.NewStyle().Background(pal.Background).Render(" ")
+		return lipgloss.NewStyle().Background(pal.Background).Render("    " + c1 + gap + c2 + gap + c3)
+	}
 
 	var afRows []string
 	afRows = append(afRows, afHdr, afTableHdrs, afDivider)
@@ -107,7 +122,7 @@ func RenderBGPDetailModal(entry ndk.BGPPeerState, pal theme.Palette, width, heig
 			rx = st.RxPrefixes
 			tx = st.TxPrefixes
 		}
-		afRows = append(afRows, fmt.Sprintf("    %-20s %-16d %-16d", "ipv4-unicast", rx, tx))
+		afRows = append(afRows, fmtAfRow("ipv4-unicast", rx, tx))
 	} else {
 		for _, af := range entry.AddrFamilies {
 			rx := entry.RxPrefixes
@@ -116,7 +131,7 @@ func RenderBGPDetailModal(entry ndk.BGPPeerState, pal theme.Palette, width, heig
 				rx = st.RxPrefixes
 				tx = st.TxPrefixes
 			}
-			afRows = append(afRows, fmt.Sprintf("    %-20s %-16d %-16d", af, rx, tx))
+			afRows = append(afRows, fmtAfRow(af, rx, tx))
 		}
 	}
 	afBox := strings.Join(afRows, "\n")
@@ -126,9 +141,9 @@ func RenderBGPDetailModal(entry ndk.BGPPeerState, pal theme.Palette, width, heig
 	if entry.InMaintenance {
 		maintActionText = "Press 'm' to take neighbor out of Maintenance Mode"
 	}
-	footerStr := lipgloss.NewStyle().Foreground(pal.Muted).Render(fmt.Sprintf("%s • Esc/Enter/q to close", maintActionText))
+	footerStr := lipgloss.NewStyle().Foreground(pal.Muted).Background(pal.Background).Render(fmt.Sprintf("%s • Esc/Enter/q to close", maintActionText))
 
-	modalContent := lipgloss.JoinVertical(
+	rawContent := lipgloss.JoinVertical(
 		lipgloss.Left,
 		headerStr,
 		"",
@@ -139,10 +154,27 @@ func RenderBGPDetailModal(entry ndk.BGPPeerState, pal theme.Palette, width, heig
 		footerStr,
 	)
 
+	contentWidth := modalWidth - 4
+	r, g, b, _ := pal.Background.RGBA()
+	bgSeq := fmt.Sprintf("\x1b[48;2;%d;%d;%dm", uint8(r>>8), uint8(g>>8), uint8(b>>8))
+	resetSeq := fmt.Sprintf("\x1b[0m%s", bgSeq)
+
+	var styledLines []string
+	for _, l := range strings.Split(rawContent, "\n") {
+		w := lipgloss.Width(l)
+		if w < contentWidth {
+			l += strings.Repeat(" ", contentWidth-w)
+		}
+		cleaned := strings.ReplaceAll(l, "\x1b[0m", resetSeq)
+		styledLines = append(styledLines, bgSeq+cleaned+"\x1b[0m")
+	}
+	modalContent := strings.Join(styledLines, "\n")
+
 	boxStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(pal.Primary).
-		Background(pal.Surface).
+		BorderBackground(pal.Background).
+		Background(pal.Background).
 		Padding(1, 2).
 		Width(modalWidth)
 
@@ -166,6 +198,7 @@ func RenderBGPDetailModal(entry ndk.BGPPeerState, pal theme.Palette, width, heig
 		promptBox := lipgloss.NewStyle().
 			Border(lipgloss.DoubleBorder()).
 			BorderForeground(pal.Warning).
+			BorderBackground(pal.Background).
 			Background(pal.Background).
 			Padding(1, 2).
 			Align(lipgloss.Center).

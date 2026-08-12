@@ -62,8 +62,8 @@ func (v *RouteView) Render(snap *ndk.TelemetryState, pal theme.Palette, width, h
 		height = 10
 	}
 
-	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(pal.Primary)
-	subStyle := lipgloss.NewStyle().Foreground(pal.Subtext)
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(pal.Primary).Background(pal.Background)
+	subStyle := lipgloss.NewStyle().Foreground(pal.Subtext).Background(pal.Background)
 
 	filteredRoutes := GetFilteredRoutes(snap, searchQuery)
 	totalCount := len(filteredRoutes)
@@ -91,7 +91,7 @@ func (v *RouteView) Render(snap *ndk.TelemetryState, pal theme.Palette, width, h
 		v.SelectedIdx = 0
 	}
 
-	summaryStr := lipgloss.NewStyle().Foreground(pal.Text).Render(
+	summaryStr := lipgloss.NewStyle().Foreground(pal.Text).Background(pal.Background).Render(
 		fmt.Sprintf("Total Matching Routes: %d  |  BGP: %d  |  Direct: %d  |  Static: %d",
 			totalCount, bgpCount, directCount, staticCount),
 	)
@@ -162,11 +162,11 @@ func (v *RouteView) Render(snap *ndk.TelemetryState, pal theme.Palette, width, h
 				nhDisplay = "direct"
 			}
 
-			sPrefix := padRight(entry.Prefix, 20)
-			sProto := padRight(pName, 10)
-			sPref := padRight(fmt.Sprintf("%d", entry.Preference), 12)
-			sMetric := padRight(fmt.Sprintf("%d", entry.Metric), 8)
-			sNextHop := padRight(nhDisplay, 36)
+			sPrefix := padRight(entry.Prefix, 21)
+			sProto := padRight(pName, 11)
+			sPref := padRight(fmt.Sprintf("%d", entry.Preference), 13)
+			sMetric := padRight(fmt.Sprintf("%d", entry.Metric), 9)
+			sNextHop := padRight(nhDisplay, 37)
 			sNetInst := padRight(entry.NetInst, 12)
 
 			rowWidth := width - 6
@@ -176,7 +176,7 @@ func (v *RouteView) Render(snap *ndk.TelemetryState, pal theme.Palette, width, h
 
 			var row string
 			if i == v.SelectedIdx {
-				rawRow := fmt.Sprintf("► %s %s %s %s %s %s", sPrefix, sProto, sPref, sMetric, sNextHop, sNetInst)
+				rawRow := fmt.Sprintf("► %s%s%s%s%s%s", sPrefix, sProto, sPref, sMetric, sNextHop, sNetInst)
 				rawRow = padRight(rawRow, rowWidth)
 				row = lipgloss.NewStyle().
 					Bold(true).
@@ -184,18 +184,18 @@ func (v *RouteView) Render(snap *ndk.TelemetryState, pal theme.Palette, width, h
 					Background(pal.Highlight).
 					Render(rawRow)
 			} else {
-				fPrefix := lipgloss.NewStyle().Foreground(pal.Text).Render(sPrefix)
-				fProto := lipgloss.NewStyle().Foreground(pColor).Bold(true).Render(sProto)
-				fPref := lipgloss.NewStyle().Foreground(pal.Subtext).Render(sPref)
-				fMetric := lipgloss.NewStyle().Foreground(pal.Subtext).Render(sMetric)
+				fPrefix := lipgloss.NewStyle().Foreground(pal.Text).Background(pal.Background).Render(sPrefix)
+				fProto := lipgloss.NewStyle().Foreground(pColor).Background(pal.Background).Bold(true).Render(sProto)
+				fPref := lipgloss.NewStyle().Foreground(pal.Subtext).Background(pal.Background).Render(sPref)
+				fMetric := lipgloss.NewStyle().Foreground(pal.Subtext).Background(pal.Background).Render(sMetric)
 				nhColor := pal.Warning
 				if len(entry.NextHops) > 1 {
 					nhColor = lipgloss.Color("#00FF66")
 				}
-				fNextHop := lipgloss.NewStyle().Foreground(nhColor).Render(sNextHop)
-				fNetInst := lipgloss.NewStyle().Foreground(pal.Primary).Render(sNetInst)
+				fNextHop := lipgloss.NewStyle().Foreground(nhColor).Background(pal.Background).Render(sNextHop)
+				fNetInst := lipgloss.NewStyle().Foreground(pal.Primary).Background(pal.Background).Render(sNetInst)
 
-				row = fmt.Sprintf("  %s %s %s %s %s %s", fPrefix, fProto, fPref, fMetric, fNextHop, fNetInst)
+				row = lipgloss.NewStyle().Background(pal.Background).Render(fmt.Sprintf("  %s%s%s%s%s%s", fPrefix, fProto, fPref, fMetric, fNextHop, fNetInst))
 			}
 			routeRows = append(routeRows, row)
 		}
@@ -209,23 +209,24 @@ func (v *RouteView) Render(snap *ndk.TelemetryState, pal theme.Palette, width, h
 	boxStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(pal.Primary).
-		Background(pal.Surface).
+		BorderBackground(pal.Background).
+		Background(pal.Background).
 		Width(width - 2).
 		Height(height - 2).
 		Padding(0, 1)
 
 	searchBarStr := ""
 	if searchActive {
-		searchBarStr = lipgloss.NewStyle().Foreground(pal.Warning).Bold(true).Render(fmt.Sprintf("\n🔍 SEARCH: %s [Esc to exit]", searchInputView))
+		searchBarStr = lipgloss.NewStyle().Foreground(pal.Warning).Background(pal.Background).Bold(true).Render(fmt.Sprintf("\n🔍 SEARCH: %s [Esc to exit]", searchInputView))
 	} else if searchQuery != "" {
-		searchBarStr = lipgloss.NewStyle().Foreground(pal.Secondary).Render(fmt.Sprintf("  [Filtered by: '%s' - press / to edit, Esc to clear]", searchQuery))
+		searchBarStr = lipgloss.NewStyle().Foreground(pal.Secondary).Background(pal.Background).Render(fmt.Sprintf("  [Filtered by: '%s' - press / to edit, Esc to clear]", searchQuery))
 	}
 
-	header := fmt.Sprintf("%s %s%s",
+	header := lipgloss.NewStyle().Background(pal.Background).Render(fmt.Sprintf("%s %s%s",
 		titleStyle.Render("🔀 IP ROUTING TABLE (RIB / FIB)"),
 		subStyle.Render("[Multi-Instance IP Route Table]"),
 		searchBarStr,
-	)
+	))
 
 	return boxStyle.Render(header + "\n" + summaryStr + "\n\n" + strings.Join(routeRows, "\n") + "\n" + scrollStatus)
 }
@@ -261,9 +262,8 @@ func RenderRouteDetailModal(r ndk.RouteEntry, snap *ndk.TelemetryState, pal them
 		pColor = pal.Warning
 	}
 
-	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(pColor)
-	lblStyle := lipgloss.NewStyle().Bold(true).Foreground(pal.Secondary)
-	valStyle := lipgloss.NewStyle().Foreground(pal.Text)
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(pColor).Background(pal.Background)
+	valStyle := lipgloss.NewStyle().Foreground(pal.Text).Background(pal.Background)
 
 	nhDisplay := r.NextHop
 	if len(r.NextHops) > 1 {
@@ -272,35 +272,58 @@ func RenderRouteDetailModal(r ndk.RouteEntry, snap *ndk.TelemetryState, pal them
 		nhDisplay = "direct (locally connected interface)"
 	}
 
+	fmtRow := func(lbl string, val string) string {
+		l := lipgloss.NewStyle().Foreground(pal.Subtext).Background(pal.Background).Render(padRight(lbl, 24))
+		gap := lipgloss.NewStyle().Foreground(pal.Muted).Background(pal.Background).Render(" : ")
+		v := lipgloss.NewStyle().Foreground(pal.Text).Background(pal.Background).Render(val)
+		return lipgloss.NewStyle().Background(pal.Background).Render("  " + l + gap + v)
+	}
+
 	lines := []string{
 		titleStyle.Render("🔀 IP ROUTE ENTRY DETAILS - " + r.Prefix),
 		statusBadge,
-		lipgloss.NewStyle().Foreground(pal.Muted).Render(strings.Repeat("─", modalWidth-4)),
-		fmt.Sprintf("  %-24s : %s", lblStyle.Render("Destination Prefix"), valStyle.Render(r.Prefix)),
-		fmt.Sprintf("  %-24s : %s", lblStyle.Render("Route Protocol"), valStyle.Render(strings.ToUpper(r.Protocol))),
-		fmt.Sprintf("  %-24s : %s", lblStyle.Render("Resolved Next-Hop"), valStyle.Render(nhDisplay)),
-		fmt.Sprintf("  %-24s : %s", lblStyle.Render("Network Instance VRF"), valStyle.Render(r.NetInst)),
-		fmt.Sprintf("  %-24s : %s", lblStyle.Render("Route Preference"), valStyle.Render(fmt.Sprintf("%d", r.Preference))),
-		fmt.Sprintf("  %-24s : %s", lblStyle.Render("Route Metric / Cost"), valStyle.Render(fmt.Sprintf("%d", r.Metric))),
+		lipgloss.NewStyle().Foreground(pal.Muted).Background(pal.Background).Render(strings.Repeat("─", modalWidth-4)),
+		fmtRow("Destination Prefix", r.Prefix),
+		fmtRow("Route Protocol", strings.ToUpper(r.Protocol)),
+		fmtRow("Resolved Next-Hop", nhDisplay),
+		fmtRow("Network Instance VRF", r.NetInst),
+		fmtRow("Route Preference", fmt.Sprintf("%d", r.Preference)),
+		fmtRow("Route Metric / Cost", fmt.Sprintf("%d", r.Metric)),
 	}
 
 	if len(r.NextHops) > 1 {
 		lines = append(lines, "")
-		lines = append(lines, lipgloss.NewStyle().Bold(true).Foreground(pal.Primary).Render(fmt.Sprintf("Equal-Cost Multi-Path (ECMP): %d Active Next-Hop Paths:", len(r.NextHops))))
+		lines = append(lines, lipgloss.NewStyle().Bold(true).Foreground(pal.Primary).Background(pal.Background).Render(fmt.Sprintf("Equal-Cost Multi-Path (ECMP): %d Active Next-Hop Paths:", len(r.NextHops))))
 		for idx, nh := range r.NextHops {
 			lines = append(lines, fmt.Sprintf("  [%d] Next-Hop Path: %s", idx+1, valStyle.Render(nh)))
 		}
 	}
 
 	lines = append(lines, "")
-	lines = append(lines, lipgloss.NewStyle().Foreground(pal.Muted).Render("Press ESC or ENTER to close detail window"))
+	lines = append(lines, lipgloss.NewStyle().Foreground(pal.Muted).Background(pal.Background).Render("Press ESC or ENTER to close detail window"))
 
 	boxStyle := lipgloss.NewStyle().
 		Border(lipgloss.DoubleBorder()).
 		BorderForeground(pColor).
-		Background(pal.Surface).
+		BorderBackground(pal.Background).
+		Background(pal.Background).
 		Padding(1, 2).
 		Width(modalWidth)
 
-	return boxStyle.Render(strings.Join(lines, "\n"))
+	rawContent := strings.Join(lines, "\n")
+	contentWidth := modalWidth - 4
+	cr, cg, cb, _ := pal.Background.RGBA()
+	bgSeq := fmt.Sprintf("\x1b[48;2;%d;%d;%dm", uint8(cr>>8), uint8(cg>>8), uint8(cb>>8))
+	resetSeq := fmt.Sprintf("\x1b[0m%s", bgSeq)
+
+	var styledLines []string
+	for _, l := range strings.Split(rawContent, "\n") {
+		w := lipgloss.Width(l)
+		if w < contentWidth {
+			l += strings.Repeat(" ", contentWidth-w)
+		}
+		cleaned := strings.ReplaceAll(l, "\x1b[0m", resetSeq)
+		styledLines = append(styledLines, bgSeq+cleaned+"\x1b[0m")
+	}
+	return boxStyle.Render(strings.Join(styledLines, "\n"))
 }

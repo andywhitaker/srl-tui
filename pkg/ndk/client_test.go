@@ -799,4 +799,35 @@ func TestNoSlash32HostAddressesInType5Routes(t *testing.T) {
 	}
 }
 
+func TestDynamicUptimeAndCPURAMCounters(t *testing.T) {
+	state := NewTelemetryState(16)
+	state.StartTime = time.Now().Add(-10 * time.Minute)
+	state.CPUUsage = 25.5
+	state.RAMUsage = 42.0
+
+	pastEst := time.Now().Add(-5 * time.Minute)
+	state.BGPPeers = []BGPPeerState{
+		{
+			NeighborIP:      "10.1.10.10",
+			SessionState:    "ESTABLISHED",
+			LastEstablished: pastEst,
+			Uptime:          FormatUptimeDuration(time.Since(pastEst)),
+		},
+	}
+
+	snap1 := state.Snapshot()
+	if snap1.Uptime < 9*time.Minute {
+		t.Fatalf("Expected system uptime >= 9m, got %v", snap1.Uptime)
+	}
+	if snap1.BGPPeers[0].Uptime == "" || snap1.BGPPeers[0].Uptime == "-" {
+		t.Fatalf("Expected formatted BGP peer uptime, got %s", snap1.BGPPeers[0].Uptime)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	snap2 := state.Snapshot()
+	if snap2.Uptime <= snap1.Uptime {
+		t.Fatalf("System uptime did not count up dynamically: snap1=%v, snap2=%v", snap1.Uptime, snap2.Uptime)
+	}
+}
+
 

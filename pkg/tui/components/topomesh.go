@@ -37,8 +37,8 @@ func RenderTopoMesh(snap *ndk.TelemetryState, focused bool, pal theme.Palette, w
 		width = 50
 	}
 
-	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(pal.Primary)
-	subStyle := lipgloss.NewStyle().Foreground(pal.Subtext)
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(pal.Primary).Background(pal.Background)
+	subStyle := lipgloss.NewStyle().Foreground(pal.Subtext).Background(pal.Background)
 
 	// Filter BGP peers
 	activeBgp := GetFilteredBGP(snap, searchQuery)
@@ -70,7 +70,8 @@ func RenderTopoMesh(snap *ndk.TelemetryState, focused bool, pal theme.Palette, w
 			nBox := lipgloss.NewStyle().
 				Border(lipgloss.RoundedBorder()).
 				BorderForeground(stateColor).
-				Background(pal.Surface).
+				BorderBackground(pal.Background).
+				Background(pal.Background).
 				Padding(0, 1).
 				Align(lipgloss.Center).
 				Width(24).
@@ -91,54 +92,66 @@ func RenderTopoMesh(snap *ndk.TelemetryState, focused bool, pal theme.Palette, w
 		Bold(true).
 		Border(lipgloss.DoubleBorder()).
 		BorderForeground(pal.Primary).
-		Background(pal.Surface).
+		BorderBackground(pal.Background).
+		Background(pal.Background).
 		Padding(0, 2).
 		Align(lipgloss.Center).
 		Width(36).
 		Render(fmt.Sprintf("LOCAL SWITCH: %s\n(%s)", snap.Hostname, snap.Platform))
 
-	localCentered := lipgloss.NewStyle().Width(totalWidth).Align(lipgloss.Center).Render(localBox)
+	localCentered := lipgloss.NewStyle().Width(totalWidth).Align(lipgloss.Center).Background(pal.Background).Render(localBox)
 
 	var diagramParts []string
 	if len(topBoxStrings) > 0 {
-		gapStr := "   "
+		gapLine := lipgloss.NewStyle().Background(pal.Background).Render("   ")
+		gapStr := fmt.Sprintf("%s\n%s\n%s\n%s", gapLine, gapLine, gapLine, gapLine)
 		topNodesRow := lipgloss.JoinHorizontal(lipgloss.Top, interleaveStrings(topBoxStrings, gapStr)...)
-		diagramParts = append(diagramParts, topNodesRow, "", "", localCentered)
+		topNodesPadded := lipgloss.NewStyle().Width(totalWidth).Background(pal.Background).Render(topNodesRow)
+
+		diagramParts = append(diagramParts, topNodesPadded, "", "", localCentered)
 	} else {
 		noMatchMsg := lipgloss.NewStyle().
 			Foreground(pal.Muted).
+			Background(pal.Background).
 			Render("  (no BGP peers match filter)")
 		diagramParts = append(diagramParts, noMatchMsg, "", localCentered)
 	}
 
-	diagramStr := lipgloss.JoinVertical(lipgloss.Left, diagramParts...)
+	rawDiagram := lipgloss.JoinVertical(lipgloss.Left, diagramParts...)
+	var styledDiagramLines []string
+	bgStyle := lipgloss.NewStyle().Background(pal.Background)
+
+	for _, line := range strings.Split(rawDiagram, "\n") {
+		styledDiagramLines = append(styledDiagramLines, bgStyle.Render(line))
+	}
+	diagramStr := strings.Join(styledDiagramLines, "\n")
 
 	// BGP Session Table
-	colHdrs := fmt.Sprintf("   %-18s %-10s %-10s %-16s %-16s %-18s %-10s %s",
+	colHdrs := fmt.Sprintf("   %-19s%-11s%-11s%-17s%-17s%-19s%-11s%s",
 		"NEIGHBOR IP", "PEER AS", "TYPE", "STATE", "INTERFACE", "ACTIVE AFs", "UPTIME", "PREFIXES (Rx/Tx)",
 	)
 
 	var bgpRows []string
-	bgpRows = append(bgpRows, lipgloss.NewStyle().Bold(true).Foreground(pal.Primary).Render(colHdrs))
-	bgpRows = append(bgpRows, lipgloss.NewStyle().Foreground(pal.Muted).Render("  ────────────────── ────────── ────────── ──────────────── ──────────────── ────────────────── ────────── ────────────────"))
+	bgpRows = append(bgpRows, lipgloss.NewStyle().Bold(true).Foreground(pal.Primary).Background(pal.Background).Render(colHdrs))
+	bgpRows = append(bgpRows, lipgloss.NewStyle().Foreground(pal.Muted).Background(pal.Background).Render("  ────────────────── ────────── ────────── ──────────────── ──────────────── ────────────────── ────────── ────────────────"))
 
 	if len(activeBgp) == 0 {
-		bgpRows = append(bgpRows, lipgloss.NewStyle().Foreground(pal.Subtext).Render("  No matching BGP routing protocol adjacencies discovered"))
+		bgpRows = append(bgpRows, lipgloss.NewStyle().Foreground(pal.Subtext).Background(pal.Background).Render("  No matching BGP routing protocol adjacencies discovered"))
 	} else {
 		for i, peer := range activeBgp {
 			stateUpper := strings.ToUpper(peer.SessionState)
 			stateText := "● " + stateUpper
-			stateStyle := lipgloss.NewStyle().Foreground(pal.Success)
+			stateStyle := lipgloss.NewStyle().Foreground(pal.Success).Background(pal.Background)
 
 			if peer.InMaintenance {
 				stateText = "🚧 MAINT MODE"
-				stateStyle = lipgloss.NewStyle().Foreground(pal.Warning).Bold(true)
+				stateStyle = lipgloss.NewStyle().Foreground(pal.Warning).Background(pal.Background).Bold(true)
 			} else if stateUpper == "ACTIVE" || stateUpper == "CONNECT" || stateUpper == "CONNECTING" {
 				stateText = "◯ " + stateUpper
-				stateStyle = lipgloss.NewStyle().Foreground(pal.Warning)
+				stateStyle = lipgloss.NewStyle().Foreground(pal.Warning).Background(pal.Background)
 			} else if stateUpper != "ESTABLISHED" {
 				stateText = "✕ " + stateUpper
-				stateStyle = lipgloss.NewStyle().Foreground(pal.Error)
+				stateStyle = lipgloss.NewStyle().Foreground(pal.Error).Background(pal.Background)
 			}
 
 			ipDisplay := peer.NeighborIP
@@ -151,13 +164,13 @@ func RenderTopoMesh(snap *ndk.TelemetryState, focused bool, pal theme.Palette, w
 				afDisplay = "ipv4-unicast"
 			}
 
-			ipStr := lipgloss.NewStyle().Foreground(pal.Text).Render(fmt.Sprintf("%-18s", ipDisplay))
-			asStr := lipgloss.NewStyle().Foreground(pal.Secondary).Render(fmt.Sprintf("%-10d", peer.PeerASN))
-			typeStr := lipgloss.NewStyle().Foreground(pal.Primary).Render(fmt.Sprintf("%-10s", peer.PeerType))
-			stStr := stateStyle.Render(fmt.Sprintf("%-16s", stateText))
-			intfStr := lipgloss.NewStyle().Foreground(pal.Warning).Render(fmt.Sprintf("%-16s", peer.Interface))
-			afStr := lipgloss.NewStyle().Foreground(pal.Primary).Render(fmt.Sprintf("%-18s", afDisplay))
-			upStr := lipgloss.NewStyle().Foreground(pal.Subtext).Render(fmt.Sprintf("%-10s", peer.Uptime))
+			ipStr := lipgloss.NewStyle().Foreground(pal.Text).Background(pal.Background).Render(padRight(ipDisplay, 19))
+			asStr := lipgloss.NewStyle().Foreground(pal.Secondary).Background(pal.Background).Render(padRight(fmt.Sprintf("%d", peer.PeerASN), 11))
+			typeStr := lipgloss.NewStyle().Foreground(pal.Primary).Background(pal.Background).Render(padRight(peer.PeerType, 11))
+			stStr := stateStyle.Render(padRight(stateText, 17))
+			intfStr := lipgloss.NewStyle().Foreground(pal.Warning).Background(pal.Background).Render(padRight(peer.Interface, 17))
+			afStr := lipgloss.NewStyle().Foreground(pal.Primary).Background(pal.Background).Render(padRight(afDisplay, 19))
+			upStr := lipgloss.NewStyle().Foreground(pal.Subtext).Background(pal.Background).Render(padRight(peer.Uptime, 11))
 			var pfxParts []string
 			if len(peer.AddrFamilies) > 0 {
 				for _, af := range peer.AddrFamilies {
@@ -168,19 +181,23 @@ func RenderTopoMesh(snap *ndk.TelemetryState, focused bool, pal theme.Palette, w
 					}
 				}
 			}
-			pfxStr := strings.Join(pfxParts, ", ")
-			if pfxStr == "" {
-				pfxStr = fmt.Sprintf("%d/%d", peer.RxPrefixes, peer.TxPrefixes)
+			pfxTxt := strings.Join(pfxParts, ", ")
+			if pfxTxt == "" {
+				pfxTxt = fmt.Sprintf("%d/%d", peer.RxPrefixes, peer.TxPrefixes)
 			}
+			pfxStr := lipgloss.NewStyle().Foreground(pal.Text).Background(pal.Background).Render(pfxTxt)
 
 			prefixPointer := "  "
 			if i == selectedIdx {
 				prefixPointer = "> "
 			}
 
-			row := fmt.Sprintf("%s%s %s %s %s %s %s %s %s", prefixPointer, ipStr, asStr, typeStr, stStr, intfStr, afStr, upStr, pfxStr)
+			var row string
 			if i == selectedIdx {
-				row = lipgloss.NewStyle().Background(pal.Highlight).Bold(true).Render(row)
+				rowStr := fmt.Sprintf("%s%-18s %-10d %-10s %-16s %-16s %-18s %-10s %s", prefixPointer, ipDisplay, peer.PeerASN, peer.PeerType, stateText, peer.Interface, afDisplay, peer.Uptime, pfxTxt)
+				row = lipgloss.NewStyle().Foreground(pal.Background).Background(pal.Highlight).Bold(true).Render(rowStr)
+			} else {
+				row = lipgloss.NewStyle().Background(pal.Background).Render(fmt.Sprintf("%s%s%s%s%s%s%s%s%s", prefixPointer, ipStr, asStr, typeStr, stStr, intfStr, afStr, upStr, pfxStr))
 			}
 			bgpRows = append(bgpRows, row)
 		}
@@ -196,23 +213,24 @@ func RenderTopoMesh(snap *ndk.TelemetryState, focused bool, pal theme.Palette, w
 	panelStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(borderColor).
-		Background(pal.Surface).
+		BorderBackground(pal.Background).
+		Background(pal.Background).
 		Width(width - 2).
 		Height(height - 2).
 		Padding(0, 1)
 
 	searchBarStr := ""
 	if searchActive {
-		searchBarStr = lipgloss.NewStyle().Foreground(pal.Warning).Bold(true).Render(fmt.Sprintf("\n🔍 SEARCH: %s [Esc to exit]", searchInputView))
+		searchBarStr = lipgloss.NewStyle().Foreground(pal.Warning).Background(pal.Background).Bold(true).Render(fmt.Sprintf("\n🔍 SEARCH: %s [Esc to exit]", searchInputView))
 	} else if searchQuery != "" {
-		searchBarStr = lipgloss.NewStyle().Foreground(pal.Secondary).Render(fmt.Sprintf("  [Filtered by: '%s' - press / to edit, Esc to clear]", searchQuery))
+		searchBarStr = lipgloss.NewStyle().Foreground(pal.Secondary).Background(pal.Background).Render(fmt.Sprintf("  [Filtered by: '%s' - press / to edit, Esc to clear]", searchQuery))
 	}
 
-	header := fmt.Sprintf("%s %s%s",
+	header := lipgloss.NewStyle().Background(pal.Background).Render(fmt.Sprintf("%s %s%s",
 		titleStyle.Render("🌐 BGP ROUTING PROTOCOL TOPOLOGY & MESH"),
 		subStyle.Render("[Real-time BGP routing adjacencies & session states • Arrow Up/Down to select, Enter for details]"),
 		searchBarStr,
-	)
+	))
 
 	return panelStyle.Render(header + "\n\n" + diagramStr + "\n\n" + tableStr)
 }
